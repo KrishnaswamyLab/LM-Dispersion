@@ -55,6 +55,13 @@ Alternatively, put these into a `env.sh` and run
 . env.sh
 ```
 
+test the training with small context window and a small subset:
+```
+apptainer shell --nv --bind ${HOST_CA_CERT_PATH}:${CONTAINER_CA_CERT_PATH} --overlay ${OVERLAY_PATH} ${CONTAINER_PATH}
+cd $WORK_DIR
+FORCE_TORCHRUN=1 llamafactory-cli train my/llama_wiki_pretrain_test.yaml 
+```
+
 adjust `pretrain_gpt2.sbatch` based on hardware
 
 Submit slurm job

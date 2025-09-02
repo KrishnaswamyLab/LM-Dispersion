@@ -14,6 +14,7 @@ flash_attn: fa2
 ### dataset
 dataset: wikitext
 # template: llama3 # do not use template for pretraining
+template: empty
 cutoff_len: 8192
 # max_samples: 1000
 overwrite_cache: true

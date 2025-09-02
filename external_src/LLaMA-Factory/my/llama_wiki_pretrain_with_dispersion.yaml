@@ -12,6 +12,7 @@ flash_attn: fa2
 ### dataset
 dataset: wikitext
 # template: llama3
+template: empty
 cutoff_len: 8192
 overwrite_cache: true
 preprocessing_num_workers: 16

@@ -171,6 +171,10 @@ class CustomTrainer(Trainer):
             self._disp_fn = None
 
         self.loss_fn = CausalLMLoss()
+        
+        # Track logging to avoid duplicate logs per global step
+        self._last_logged_step = -1
+        self._current_accumulation_step = 0
 
     @override
     def create_optimizer(self) -> "torch.optim.Optimizer":
@@ -193,7 +197,7 @@ class CustomTrainer(Trainer):
         return super()._get_train_sampler(*args, **kwargs)
 
     @override
-    def compute_loss(self, model, inputs, *args, **kwargs):
+    def compute_loss(self, model, inputs, return_outputs=False, *args, **kwargs):
         labels = inputs["labels"]
         
         # Determine if we should compute dispersion
@@ -212,56 +216,95 @@ class CustomTrainer(Trainer):
             logits = outputs.logits
             raw_loss = self.loss_fn(logits, labels)
 
-        # Apply gradient accumulation scaling (same as what super().compute_loss does)
-        standard_loss = raw_loss
-        if self.args.gradient_accumulation_steps > 1:
-            standard_loss = standard_loss / self.args.gradient_accumulation_steps
+        # Apply gradient accumulation scaling ONLY during training
+        if model.training and self.args.gradient_accumulation_steps > 1:
+            scaled_loss = raw_loss / self.args.gradient_accumulation_steps
+        else:
+            scaled_loss = raw_loss
         
-        total = standard_loss
+        total = scaled_loss
 
         # print(f"DEBUG: Raw loss: {float(raw_loss)}")
-        # print(f"DEBUG: Standard loss: {float(standard_loss)}")
+        # print(f"DEBUG: Scaled loss: {float(scaled_loss)}")
 
         # Add dispersion if enabled
         if should_compute_disp:
             disp_val = self._dispersion_from_hidden_states(outputs.hidden_states, labels)
-            # Scale dispersion loss the same way as standard loss
-            if self.args.gradient_accumulation_steps > 1:
-                disp_val = disp_val / self.args.gradient_accumulation_steps
+            # Scale dispersion loss the same way as standard loss (only during training)
+            if model.training and self.args.gradient_accumulation_steps > 1:
+                scaled_disp_val = disp_val / self.args.gradient_accumulation_steps
+            else:
+                scaled_disp_val = disp_val
             
             # print(f"DEBUG: Dispersion loss: {float(disp_val)}")
-            total = standard_loss + self.disp_coeff * disp_val
+            total = scaled_loss + self.disp_coeff * scaled_disp_val
             # print(f"DEBUG: Total loss: {float(total)}")
             
-            # Log metrics with appropriate prefix
+            # Track gradient accumulation step
             if model.training:
-                # Training metrics
-                self.log({
-                    "train/dispersion_loss": float(disp_val.detach()),
-                    "train/standard_loss": float(standard_loss.detach()),
-                    "train/total_loss": float(total.detach())
-                })
+                self._current_accumulation_step = (self._current_accumulation_step + 1) % self.args.gradient_accumulation_steps
+                is_last_accumulation_step = (self._current_accumulation_step == 0)
             else:
-                # Evaluation metrics
-                self.log({
-                    "eval/dispersion_loss": float(disp_val.detach()),
-                    "eval/standard_loss": float(standard_loss.detach()),
-                    "eval/total_loss": float(total.detach())
-                })
+                is_last_accumulation_step = True  # Always log during eval
+            
+            # Log metrics only at proper intervals to avoid spam
+            # For training: only log on last accumulation step and at logging intervals
+            # For eval: always log
+            should_log = (not model.training or 
+                         (is_last_accumulation_step and
+                          hasattr(self.state, 'global_step') and 
+                          self.state.global_step > 0 and 
+                          self.state.global_step % self.args.logging_steps == 0 and
+                          self.state.global_step != self._last_logged_step))
+            
+            if should_log:
+                if model.training:
+                    self._last_logged_step = self.state.global_step  # Mark as logged
+                    self.log({
+                        "train/dispersion_loss": float(disp_val.detach()),
+                        "train/standard_loss": float(raw_loss.detach()),
+                        "train/total_loss": float(total.detach())
+                    })
+                else:
+                    # Evaluation metrics
+                    self.log({
+                        "eval/dispersion_loss": float(disp_val.detach()),
+                        "eval/standard_loss": float(raw_loss.detach()),
+                        "eval/total_loss": float(total.detach())
+                    })
             
             # Store for logging (optional)
             if hasattr(outputs, '__dict__'):
                 outputs.dispersion_loss = disp_val.detach()
         else:
-            # Log standard loss only
-            if not model.training:
-                self.log({
-                    "eval/standard_loss": float(standard_loss.detach())
-                })
+            # Track gradient accumulation step even when dispersion is disabled
+            if model.training:
+                self._current_accumulation_step = (self._current_accumulation_step + 1) % self.args.gradient_accumulation_steps
+                is_last_accumulation_step = (self._current_accumulation_step == 0)
+            else:
+                is_last_accumulation_step = True  # Always log during eval
+            
+            # When dispersion is disabled, provide basic logging at proper intervals
+            # For training: only log on last accumulation step and at logging intervals
+            should_log = (not model.training or 
+                         (is_last_accumulation_step and
+                          hasattr(self.state, 'global_step') and 
+                          self.state.global_step > 0 and 
+                          self.state.global_step % self.args.logging_steps == 0 and
+                          self.state.global_step != self._last_logged_step))
+            
+            if should_log and model.training:
+                self._last_logged_step = self.state.global_step  # Mark as logged
+                self.log({"loss": float(raw_loss.detach())})
+            # For eval, let Transformers handle eval/loss automatically
 
         # import pdb; pdb.set_trace()
         # print(f"DEBUG: Final total loss: {float(total)}")
-        return total
+        
+        if return_outputs:
+            return total, outputs
+        else:
+            return total
 
     @staticmethod
     def _seq_token_features(hidden: torch.Tensor, labels: torch.Tensor,
