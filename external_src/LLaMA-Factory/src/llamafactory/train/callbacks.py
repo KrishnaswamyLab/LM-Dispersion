@@ -28,6 +28,12 @@ import transformers
 from peft import PeftModel
 from transformers import PreTrainedModel, ProcessorMixin, TrainerCallback
 from lm_eval import simple_evaluate
+
+try:
+    import wandb
+    HAS_WANDB = True
+except ImportError:
+    HAS_WANDB = False
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR, has_length
 from transformers.utils import (
     SAFE_WEIGHTS_NAME,
@@ -517,11 +523,26 @@ class LMEvalCallback(TrainerCallback):
                         json.dump({"results": res["results"]}, f, indent=2)
                     self._log(f"[LMEval] Results saved to {out}")
 
+                    # Prepare wandb logging dict
+                    wandb_metrics = {}
+                    
                     for task, metrics in res["results"].items():
                         if isinstance(metrics, dict):
                             for metric_name, value in metrics.items():
                                 if isinstance(value, (int, float)):
                                     self._log(f"[LMEval] {task}.{metric_name}: {value:.4f}")
+                                    # Add to wandb logging dict
+                                    wandb_metrics[f"lmeval/{task}.{metric_name}"] = value
+                    
+                    # Log to wandb if enabled
+                    if wandb_metrics and "wandb" in args.report_to and HAS_WANDB:
+                        try:
+                            wandb.log(wandb_metrics, step=state.global_step)
+                            self._log(f"[LMEval] Logged {len(wandb_metrics)} metrics to wandb")
+                        except Exception as e:
+                            self._log(f"[LMEval] Failed to log to wandb: {e}")
+                    elif wandb_metrics and "wandb" in args.report_to and not HAS_WANDB:
+                        self._log("[LMEval] Warning: wandb not available, skipping metric logging")
 
                 if self.save_on_eval:
                     ckpt_dir = os.path.join(args.output_dir, f"eval_ckpt_{stage or 'interval'}_step{state.global_step}")
