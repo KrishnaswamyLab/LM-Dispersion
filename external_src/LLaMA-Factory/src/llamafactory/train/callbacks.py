@@ -17,6 +17,8 @@ import os
 import signal
 import sys
 import time
+import tempfile
+import math
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Optional
@@ -25,6 +27,7 @@ import torch
 import transformers
 from peft import PeftModel
 from transformers import PreTrainedModel, ProcessorMixin, TrainerCallback
+from lm_eval import simple_evaluate
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR, has_length
 from transformers.utils import (
     SAFE_WEIGHTS_NAME,
@@ -383,3 +386,176 @@ class ReporterCallback(TrainerCallback):
                     "generating_args": self.generating_args.to_dict(),
                 }
             )
+
+
+class LMEvalCallback(TrainerCallback):
+    """A callback for running LM evaluation during training."""
+    
+    def __init__(self, tokenizer, tasks, log_path, num_fewshot, max_eval_samples=None,
+                 eval_at_begin=True, eval_at_end=True,
+                 every_n_steps=None, save_on_eval=True):
+        self.tok = tokenizer
+        self.tasks = tasks
+        self.log_path = log_path
+        self.num_fewshot = num_fewshot
+        self.max_eval_samples = max_eval_samples
+        self.eval_at_begin = eval_at_begin
+        self.eval_at_end = eval_at_end
+        self.every_n_steps = every_n_steps
+        self.save_on_eval = save_on_eval
+        self.has_run_begin = False
+
+    def _log(self, message):
+        """Log message to file and console."""
+        print(message)
+        if self.log_path:
+            os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
+            with open(self.log_path, 'a+') as f:
+                f.write(message + '\n')
+
+    def _infer_model_dtype(self, model):
+        """
+        Infer the model's dtype from actual parameters.
+        This is more reliable than using training args, especially for bf16.
+        """
+        try:
+            # Get the actual model (unwrap if needed for distributed training)
+            actual_model = model.module if hasattr(model, 'module') else model
+            
+            # Sample a few parameters to determine dtype
+            param_dtypes = []
+            param_count = 0
+            
+            for param in actual_model.parameters():
+                if param_count >= 5:  # Sample first 5 parameters
+                    break
+                param_dtypes.append(param.dtype)
+                param_count += 1
+            
+            if not param_dtypes:
+                self._log("[LMEval] Warning: No parameters found, defaulting to float32")
+                return "float32"
+            
+            # Find the most common dtype
+            from collections import Counter
+            dtype_counts = Counter(param_dtypes)
+            most_common_dtype = dtype_counts.most_common(1)[0][0]
+            
+            # Convert torch dtype to lm_eval string
+            if most_common_dtype == torch.bfloat16:
+                return "bfloat16"
+            elif most_common_dtype == torch.float16:
+                return "float16"
+            elif most_common_dtype == torch.float32:
+                return "float32"
+            elif most_common_dtype == torch.float64:
+                return "float32"  # lm_eval doesn't support float64, use float32
+            else:
+                self._log(f"[LMEval] Warning: Unknown dtype {most_common_dtype}, defaulting to float32")
+                return "float32"
+                
+        except Exception as e:
+            self._log(f"[LMEval] Warning: Failed to infer dtype ({e}), defaulting to float32")
+            return "float32"
+
+    def _run_evaluation(self, args, state, model, stage=""):
+        # Only run evaluation on main process in distributed training
+        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        if local_rank != 0:
+            return
+
+        # Infer dtype from actual model parameters (more reliable than training args)
+        dtype = self._infer_model_dtype(model)
+        self._log(f"[LMEval] Detected model dtype: {dtype}")
+
+        # Handle multi-GPU setup
+        world_size = int(os.environ.get("WORLD_SIZE", "1"))
+
+        # Determine device configuration
+        if torch.cuda.is_available() and world_size > 1:
+            # Multi-GPU setup - use parallelization in lm_eval
+            device_str = "cuda"
+            model_args = f"pretrained={{tmp}},dtype={dtype},parallelize=True"
+        elif torch.cuda.is_available():
+            # Single GPU
+            device = next(model.parameters()).device
+            device_str = f"cuda:{device.index}" if device.index is not None else "cuda:0"
+            model_args = f"pretrained={{tmp}},dtype={dtype}"
+        else:
+            # CPU
+            device_str = "cpu"
+            model_args = f"pretrained={{tmp}},dtype={dtype}"
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                stage_str = f" ({stage})" if stage else ""
+                self._log(f"[LMEval] Running evaluation{stage_str} at step {state.global_step} (world_size={world_size}, device={device_str})...")
+
+                # Save model - handle distributed training
+                if hasattr(model, 'module'):
+                    # Model is wrapped (e.g., DDP, FSDP)
+                    model.module.save_pretrained(tmp)
+                else:
+                    model.save_pretrained(tmp)
+                self.tok.save_pretrained(tmp)
+
+                res = simple_evaluate(
+                    model="hf",
+                    model_args=model_args.format(tmp=tmp),
+                    tasks=self.tasks,
+                    num_fewshot=self.num_fewshot,
+                    batch_size="auto",
+                    device=device_str,
+                    limit=self.max_eval_samples,
+                    log_samples=False,  # Otherwise, will log individual samples in the JSON.
+                )
+
+                if "results" in res:
+                    filename = f"lm_eval_{stage}_{state.global_step}.json" if stage else f"lm_eval_step{state.global_step}.json"
+                    out = os.path.join(args.output_dir, filename)
+                    with open(out, "w") as f:
+                        json.dump({"results": res["results"]}, f, indent=2)
+                    self._log(f"[LMEval] Results saved to {out}")
+
+                    for task, metrics in res["results"].items():
+                        if isinstance(metrics, dict):
+                            for metric_name, value in metrics.items():
+                                if isinstance(value, (int, float)):
+                                    self._log(f"[LMEval] {task}.{metric_name}: {value:.4f}")
+
+                if self.save_on_eval:
+                    ckpt_dir = os.path.join(args.output_dir, f"eval_ckpt_{stage or 'interval'}_step{state.global_step}")
+                    os.makedirs(ckpt_dir, exist_ok=True)
+                    if hasattr(model, 'module'):
+                        model.module.save_pretrained(ckpt_dir, save_safetensors=getattr(args, "save_safetensors", True))
+                    else:
+                        model.save_pretrained(ckpt_dir, save_safetensors=getattr(args, "save_safetensors", True))
+                    self.tok.save_pretrained(ckpt_dir)
+                    self._log(f"[LMEval] Weights saved to {ckpt_dir}")
+
+        except Exception as e:
+            self._log(f"[LMEval] Error during evaluation{stage_str} at step {state.global_step}: {e}")
+
+    @override
+    def on_train_begin(self, args, state, control, **kwargs):
+        if self.eval_at_begin and not self.has_run_begin:
+            model = kwargs["model"]
+            self._run_evaluation(args, state, model, "begin")
+            self.has_run_begin = True
+
+    @override
+    def on_step_end(self, args, state, control, **kwargs):
+        if self.every_n_steps is None:
+            return
+
+        if state.global_step == 0 or state.global_step % self.every_n_steps != 0:
+            return
+
+        model = kwargs["model"]
+        self._run_evaluation(args, state, model, "interval")
+
+    @override
+    def on_train_end(self, args, state, control, **kwargs):
+        if self.eval_at_end:
+            model = kwargs["model"]
+            self._run_evaluation(args, state, model, "end")

@@ -482,6 +482,40 @@ class FinetuningArguments(
         metadata={"help": "Temperature parameter for InfoNCE cosine dispersion loss."},
     )
 
+    # LMEval parameters
+    lmeval_enabled: bool = field(
+        default=False,
+        metadata={"help": "Whether to enable LM evaluation during training."},
+    )
+    lmeval_tasks: Optional[str] = field(
+        default=None,
+        metadata={"help": "Comma-separated list of tasks for LM evaluation (e.g., 'lambada,wikitext,mmlu')."},
+    )
+    lmeval_num_fewshot: int = field(
+        default=1,
+        metadata={"help": "Number of few-shot examples for LM evaluation."},
+    )
+    lmeval_max_eval_samples: Optional[int] = field(
+        default=200,
+        metadata={"help": "Maximum number of samples to evaluate per task."},
+    )
+    lmeval_eval_at_begin: bool = field(
+        default=True,
+        metadata={"help": "Whether to run LM evaluation at the beginning of training."},
+    )
+    lmeval_eval_at_end: bool = field(
+        default=True,
+        metadata={"help": "Whether to run LM evaluation at the end of training."},
+    )
+    lmeval_every_n_steps: Optional[int] = field(
+        default=None,
+        metadata={"help": "Run LM evaluation every N steps. If None, only run at begin/end."},
+    )
+    lmeval_save_on_eval: bool = field(
+        default=True,
+        metadata={"help": "Whether to save model checkpoints when running LM evaluation."},
+    )
+
     def __post_init__(self):
         def split_arg(arg):
             if isinstance(arg, str):
@@ -495,6 +529,7 @@ class FinetuningArguments(
         self.additional_target: Optional[list[str]] = split_arg(self.additional_target)
         self.galore_target: list[str] = split_arg(self.galore_target)
         self.apollo_target: list[str] = split_arg(self.apollo_target)
+        self.lmeval_tasks: Optional[list[str]] = split_arg(self.lmeval_tasks)
         self.use_ref_model = self.stage == "dpo" and self.pref_loss not in ["orpo", "simpo"]
 
         assert self.finetuning_type in ["lora", "freeze", "full"], "Invalid fine-tuning method."

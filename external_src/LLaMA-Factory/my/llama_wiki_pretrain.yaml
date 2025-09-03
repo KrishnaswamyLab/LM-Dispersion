@@ -8,7 +8,7 @@ do_train: true
 # finetuning_type: lora
 # lora_target: all
 finetuning_type: full
-deepspeed: examples/deepspeed/ds_z3_config.json  # choices: [ds_z0_config.json, ds_z2_config.json, ds_z3_config.json]
+# deepspeed: examples/deepspeed/ds_z3_config.json  # choices: [ds_z0_config.json, ds_z2_config.json, ds_z3_config.json]
 flash_attn: fa2
 
 ### dataset

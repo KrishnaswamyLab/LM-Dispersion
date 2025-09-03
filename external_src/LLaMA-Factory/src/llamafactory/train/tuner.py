@@ -27,7 +27,7 @@ from ..extras.misc import infer_optim_dtype
 from ..extras.packages import is_ray_available
 from ..hparams import get_infer_args, get_ray_args, get_train_args, read_args
 from ..model import load_model, load_tokenizer
-from .callbacks import LogCallback, PissaConvertCallback, ReporterCallback
+from .callbacks import LogCallback, LMEvalCallback, PissaConvertCallback, ReporterCallback
 from .dpo import run_dpo
 from .kto import run_kto
 from .ppo import run_ppo
@@ -63,6 +63,23 @@ def _training_function(config: dict[str, Any]) -> None:
 
     if finetuning_args.early_stopping_steps is not None:
         callbacks.append(EarlyStoppingCallback(early_stopping_patience=finetuning_args.early_stopping_steps))
+
+    # Add LMEval callback if enabled
+    if finetuning_args.lmeval_enabled and finetuning_args.lmeval_tasks:
+        tokenizer_module = load_tokenizer(model_args)
+        tokenizer = tokenizer_module["tokenizer"]
+        log_path = os.path.join(training_args.output_dir, "lmeval.log")
+        callbacks.append(LMEvalCallback(
+            tokenizer=tokenizer,
+            tasks=finetuning_args.lmeval_tasks,
+            log_path=log_path,
+            num_fewshot=finetuning_args.lmeval_num_fewshot,
+            max_eval_samples=finetuning_args.lmeval_max_eval_samples,
+            eval_at_begin=finetuning_args.lmeval_eval_at_begin,
+            eval_at_end=finetuning_args.lmeval_eval_at_end,
+            every_n_steps=finetuning_args.lmeval_every_n_steps,
+            save_on_eval=finetuning_args.lmeval_save_on_eval,
+        ))
 
     callbacks.append(ReporterCallback(model_args, data_args, finetuning_args, generating_args))  # add to last
 

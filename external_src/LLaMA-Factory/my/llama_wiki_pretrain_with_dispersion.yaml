@@ -6,7 +6,7 @@ trust_remote_code: true
 stage: pt
 do_train: true
 finetuning_type: full
-deepspeed: examples/deepspeed/ds_z3_config.json
+# deepspeed: examples/deepspeed/ds_z3_config.json
 flash_attn: fa2
 
 ### dataset
