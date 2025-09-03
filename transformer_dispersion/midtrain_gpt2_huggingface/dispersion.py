@@ -25,8 +25,8 @@ class DispersionLoss(torch.nn.Module):
         variant = variant.lower()
         assert variant in {"infonce_l2", "infonce_cosine", "hinge", "covariance"}
         self.variant = variant
-        self.tau_1 = float(tau_l2)
-        self.tau_2 = float(tau_cos)
+        self.tau_l2 = float(tau_l2)
+        self.tau_cos = float(tau_cos)
         self.margin = float(margin)
         self.epsilon = float(epsilon)
 
@@ -53,12 +53,18 @@ class DispersionLoss(torch.nn.Module):
 
         elif self.variant == "infonce_l2":
             # NOTE: The distance matrix matrix `D` has shape [B, L, L].
+            # (z - z^T)^2 = z^2 + {z^T}^2 - 2 z z^T. I verified it's the same as torch.cdist(z, z).
             z_sq = (z ** 2).sum(dim=2, keepdim=True)
-            D = (z_sq + rearrange(z_sq, 'b l f -> b f l') - 2 * z @ rearrange(z, 'b l f -> b f l')) / F
+            D = (z_sq + rearrange(z_sq, 'b l f -> b f l') - 2 * z @ rearrange(z, 'b l f -> b f l'))
+            # Scale the squared distance matrix by dim since L2-distance scales by sqrt(dim).
+            D = (D / F).clamp_min(0.0)
             non_diag = ~torch.eye(L, dtype=torch.bool, device=z.device)
-            logit = - D.masked_select(non_diag) / self.tau_1
+            logit = - D.masked_select(non_diag) / self.tau_l2
+            # Norm regularization to prevent blowing up L2 distance too much.
+            norm_regularization = (z ** 2).mean() * 0.1
             # NOTE: log-sum-exp trick for `log(mean(exp(logit)))`, only differ by a constant: -log(logit.size(0))
-            return torch.logsumexp(logit + self.epsilon, dim=0)
+            print(torch.logsumexp(logit + self.epsilon, dim=0) / B, norm_regularization)
+            return torch.logsumexp(logit + self.epsilon, dim=0) / B + norm_regularization
 
         elif self.variant == "infonce_cosine":
             # NOTE: The distance matrix matrix `D` has shape [B, L, L].
@@ -66,9 +72,9 @@ class DispersionLoss(torch.nn.Module):
             cossim = z_norm @ rearrange(z_norm, 'b l f -> b f l')
             D = torch.arccos(torch.clamp(cossim, self.epsilon, 1 - self.epsilon)) / torch.pi
             non_diag = ~torch.eye(L, dtype=torch.bool, device=z.device)
-            logit = - D.masked_select(non_diag) / self.tau_2
+            logit = - D.masked_select(non_diag) / self.tau_cos
             # NOTE: log-sum-exp trick for `log(mean(exp(logit)))`, only differ by a constant: -log(logit.size(0))
-            return torch.logsumexp(logit + self.epsilon, dim=0)
+            return torch.logsumexp(logit + self.epsilon, dim=0) / B
 
         else:
             # NOTE: The distance matrix matrix `D` has shape [B, L, L].
