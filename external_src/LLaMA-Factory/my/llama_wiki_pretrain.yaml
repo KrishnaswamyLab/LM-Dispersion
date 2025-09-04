@@ -22,20 +22,25 @@ preprocessing_num_workers: 16
 dataloader_num_workers: 4
 
 ### output
-output_dir: saves/llama/full/midtrain_wikitext
+output_dir: saves/llama/full/midtrain_wikitext_lr1e-4
 logging_steps: 10
 save_steps: 100
 plot_loss: true
 overwrite_output_dir: true
 save_only_model: false
+# report_to: none
 report_to: wandb  # choices: [none, wandb, tensorboard, swanlab, mlflow]
 run_name: llama-wiki-pretrain
 
 ### train
 per_device_train_batch_size: 1
-gradient_accumulation_steps: 128
-learning_rate: 1.0e-6
-num_train_epochs: 5
+gradient_accumulation_steps: 256
+learning_rate: 1.0e-4
+# per_device_train_batch_size: 3
+# gradient_accumulation_steps: 86
+# learning_rate: 1e-6
+# max_grad_norm: 10.0
+num_train_epochs: 3
 lr_scheduler_type: cosine
 # warmup_ratio: 0.03
 warmup_steps: 50
