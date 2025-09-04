@@ -19,14 +19,14 @@ preprocessing_num_workers: 16
 dataloader_num_workers: 4
 
 ### output
-output_dir: saves/llama/full/midtrain_wikitext_dispersion_hinge
+output_dir: saves/llama/full/midtrain_wikitext_dispersion_infonce_cosine
 logging_steps: 10
 save_steps: 100
 plot_loss: true
 overwrite_output_dir: true
 save_only_model: false
 report_to: wandb
-run_name: llama-wiki-pretrain-dispersion-hinge
+run_name: llama-wiki-pretrain-dispersion-infonce_cosine
 
 ### train
 per_device_train_batch_size: 1
@@ -47,7 +47,7 @@ eval_strategy: steps
 eval_steps: 100
 
 ### dispersion loss
-dispersion: "hinge"  # or "hinge", "covariance"
+dispersion: "infonce_cosine"  # or "hinge", "covariance"
 dispersion_coeff: 0.5
 dispersion_loc: "last"  # or "all"
 tau_infonce_l2: 0.5
