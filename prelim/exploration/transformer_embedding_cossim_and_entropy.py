@@ -91,6 +91,7 @@ def plot_similarity_heatmap(cossim_matrix_by_layer: List[np.ndarray],
         layer_indices.append(layer_idx)
     hist_matrix = np.array(hist_data)
 
+    plt.rcParams['font.family'] = 'sans-serif'
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(1, 1, 1)
     ax.spines['top'].set_visible(False)
@@ -99,14 +100,13 @@ def plot_similarity_heatmap(cossim_matrix_by_layer: List[np.ndarray],
     im = ax.imshow(hist_matrix, aspect="auto", origin="lower", cmap='Reds',
                    extent=[-1, 1, 0, layer_indices[-1]], vmin=0, vmax=10)
 
-    ax.tick_params(axis='both', which='major', labelsize=18)
-    ax.set_title('Cosine Similarity by Layer', fontsize=28, pad=20)
-    ax.set_xlabel('Cosine Similarity', fontsize=24)
-    ax.set_ylabel('Layer', fontsize=24)
+    ax.tick_params(axis='both', which='major', labelsize=26)
+    ax.set_xlabel('Cosine Similarity', fontsize=36)
+    ax.set_ylabel('Layer', fontsize=36)
 
     cbar = fig.colorbar(im, ax=ax)
-    cbar.ax.tick_params(axis='both', which='major', labelsize=18)
-    cbar.ax.set_title('Probability\nDensity', fontsize=18, pad=20)
+    cbar.ax.tick_params(axis='both', which='major', labelsize=26)
+    cbar.ax.set_title('Probability\nDensity', fontsize=20, pad=20)
 
     fig.tight_layout(pad=2)
 
@@ -262,7 +262,7 @@ if __name__ == '__main__':
     parser.add_argument('--num-attention-heads', type=int, default=None)
     parser.add_argument('--num-hidden-layers', type=int, default=None)
     parser.add_argument('--plot-all', action='store_true')
-    parser.add_argument('--repetitions', type=int, default=5)
+    parser.add_argument('--repetitions', type=int, default=100)
     args = parser.parse_args()
 
     if args.huggingface_token is not None:

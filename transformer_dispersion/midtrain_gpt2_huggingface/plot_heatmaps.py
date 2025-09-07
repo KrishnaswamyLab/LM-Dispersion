@@ -75,10 +75,11 @@ if __name__ == '__main__':
     os.makedirs(os.path.dirname(figure_save_prefix), exist_ok=True)
     run_folder_list = sorted(glob(os.path.join('./results', 'midtrain_gpt2_*')))
 
-    repetitions = 5
+    repetitions = 100
     max_length = 1024
     vmax = 10
     ckpt_stride = 2
+    plt.rcParams['font.family'] = 'sans-serif'
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -138,10 +139,7 @@ if __name__ == '__main__':
                 step, ckpt_path = ckpts[col_idx]
 
                 with tempfile.TemporaryDirectory() as tmp_cache:
-                    try:
-                        tokenizer = AutoTokenizer.from_pretrained(ckpt_path, cache_dir=tmp_cache)
-                    except Exception:
-                        tokenizer = AutoTokenizer.from_pretrained(tokenizer_fallback_id, cache_dir=tmp_cache)
+                    tokenizer = AutoTokenizer.from_pretrained(ckpt_path, cache_dir=tmp_cache)
 
                     try:
                         config = AutoConfig.from_pretrained(ckpt_path, cache_dir=tmp_cache)
@@ -193,9 +191,10 @@ if __name__ == '__main__':
                             vmax=vmax,
                         )
 
-                    ax.set_title(f'{run_label(d, c, l)}\nstep {step}', fontsize=20)
-                    ax.set_ylabel('Layer', fontsize=18)
-                    ax.set_xlabel('Cosine Similarity', fontsize=18)
+                    ax.set_title(f'{run_label(d, c, l)}\nstep {step}', fontsize=24)
+                    ax.set_ylabel('Layer', fontsize=20)
+                    ax.set_xlabel('Cosine Similarity', fontsize=20)
+                    ax.tick_params(axis='both', which='major', labelsize=16)
 
                     del model
                     if device == 'cuda':
