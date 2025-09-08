@@ -26,7 +26,7 @@ metric_range_dict = {
     'paloma_wikitext_103\nword_perplexity': [20, 60],
     'lambada_openai\nacc': [0.26, 0.34],
     'lambada_standard\nacc': [0.23, 0.28],
-    'medmcqa\nacc': [0.28, 0.34],
+    'medmcqa\nacc': [0.28, 0.36],
     'mmlu\nacc': [0.245, 0.265],
 }
 
