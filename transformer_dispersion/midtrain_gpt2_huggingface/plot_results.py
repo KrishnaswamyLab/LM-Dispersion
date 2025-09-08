@@ -16,20 +16,19 @@ results_dict = {
 
 empty_metrics_dict = {
     'step': [],
-    'paloma_wikitext_103\nword_perplexity': {'mean': [], 'std': []},
-    'lambada_openai\nacc': {'mean': [], 'std': []},
-    'lambada_standard\nacc': {'mean': [], 'std': []},
-    'medmcqa\nacc': {'mean': [], 'std': []},
-    'mmlu\nacc': {'mean': [], 'std': []},
+    'paloma_wikitext_103\nword_perplexity,none': {'mean': [], 'std': []},
+    'mmlu\nacc,none': {'mean': [], 'std': []},
+    'lambada_openai\nacc,none': {'mean': [], 'std': []},
+    'lambada_standard\nacc,none': {'mean': [], 'std': []},
+    'medmcqa\nacc,none': {'mean': [], 'std': []},
+    'arc_challenge\nacc,none': {'mean': [], 'std': []},
+    'winogrande\nacc,none': {'mean': [], 'std': []},
+    'piqa\nacc,none': {'mean': [], 'std': []},
+    'truthfulqa_mc2\nacc,none': {'mean': [], 'std': []},
+    'hellaswag\nacc_norm,none': {'mean': [], 'std': []},
+    'gsm8k\nexact_match,flexible-extract': {'mean': [], 'std': []},
 }
 
-metric_range_dict = {
-    'paloma_wikitext_103\nword_perplexity': [20, 60],
-    'lambada_openai\nacc': [0.26, 0.34],
-    'lambada_standard\nacc': [0.23, 0.28],
-    'medmcqa\nacc': [0.28, 0.36],
-    'mmlu\nacc': [0.245, 0.265],
-}
 
 def sort_by_step(steps, means, stds):
     order = np.argsort(np.array(steps))
@@ -127,8 +126,8 @@ if __name__ == '__main__':
                     metric_dataset = metric.split('\n')[0]
                     metric_measure = metric.split('\n')[1]
                     results_dict['metrics'][-1][metric]['mean'].append(
-                        float(data_json['results'][metric_dataset][f'{metric_measure},none']))
-                    std = data_json['results'][metric_dataset][f'{metric_measure}_stderr,none']
+                        float(data_json['results'][metric_dataset][metric_measure]))
+                    std = data_json['results'][metric_dataset][metric_measure.replace(',', '_stderr,')]
                     if std == 'N/A':
                         results_dict['metrics'][-1][metric]['std'].append(np.nan)
                     else:
@@ -159,8 +158,8 @@ if __name__ == '__main__':
     plt.rcParams["font.family"] = "sans-serif"
     plt.rcParams["xtick.labelsize"] = 12
     plt.rcParams["ytick.labelsize"] = 12
-    fig_lines = plt.figure(figsize=(20, 12))
-    fig_bars = plt.figure(figsize=(20, 12))
+    fig_lines = plt.figure(figsize=(4*len(all_metric_names), 12))
+    fig_bars = plt.figure(figsize=(4*len(all_metric_names), 12))
 
     for row_idx, row_disp in enumerate(row_order):
         run_indices = rows_by_dispersion[row_disp]
@@ -222,7 +221,6 @@ if __name__ == '__main__':
             ax_bars.set_xticklabels([extract_coeff_from_label(label) for label in bars_labels], rotation=0, ha='center', fontsize=9)
             ax_bars.set_ylabel(metric_name, fontsize=15)
             ax_bars.set_xlabel('Dispersion Coefficient', fontsize=15)
-            # ax_bars.set_ylim(metric_range_dict[metric_name])
             ax_bars.set_ylim(metric_ylim_bars[metric_name])
 
             # Annotate the values.

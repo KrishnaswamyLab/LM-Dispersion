@@ -188,6 +188,10 @@ class LMEvalCallback(TrainerCallback):
                     device=device_str,
                     limit=self.max_eval_samples,
                     log_samples=False,  # Otherwise, will log individual samples in the JSON.
+                    random_seed=args.seed,
+                    numpy_random_seed=args.seed,
+                    torch_random_seed=args.seed,
+                    fewshot_random_seed=args.seed,
                 )
 
                 if "results" in res:
@@ -407,6 +411,7 @@ def main(args):
         per_device_train_batch_size=args.per_device_train_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.lr,
+        weight_decay=0.01,
         max_steps=max_steps,
         optim="adamw_torch",
         lr_scheduler_type="cosine",
@@ -420,7 +425,7 @@ def main(args):
         bf16=bf16,
         dataloader_num_workers=args.num_workers,
         remove_unused_columns=True,
-        warmup_ratio=0.1,
+        warmup_ratio=0.05,
     )
 
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
@@ -460,18 +465,24 @@ def main(args):
 
     # https://github.com/EleutherAI/lm-evaluation-harness/tree/main/lm_eval/tasks
     tasks = [
-        "paloma_wikitext_103",
+        "arc_challenge",
+        "gsm8k",
+        "hellaswag",
         "lambada",
         "mmlu",
         "medmcqa",
-        "wikitext",
-        "hellaswag",
-        "arc_challenge",
-        "winogrande",
+        "paloma_wikitext_103",
         "piqa",
         "truthfulqa_mc2",
-        "gsm8k",
+        "wikitext",
+        "winogrande",
     ]
+    for t in tasks:
+        if t in ("lambada", "winogrande", "truthfulqa_mc2"):
+            # These tasks are designed to be zero-shot.
+            tasks.append({"task": t, "num_fewshot": 0})
+        else:
+            tasks.append(t)
     trainer.add_callback(LMEvalCallback(tokenizer, tasks,
                                         log_path=args.log_path,
                                         num_fewshot=args.num_fewshot,
@@ -508,10 +519,10 @@ if __name__ == "__main__":
                     help="Total number of tokens to train on (token budget).")
     ap.add_argument("--dispersion", type=str, default=None, help="Dispersion loss.")
     ap.add_argument("--dispersion_coeff", type=float, default=1, help="Dispersion loss weight.")
-    ap.add_argument("--dispersion_loc", type=str, default='last', help="Dispersion loss location.")
+    ap.add_argument("--dispersion_loc", type=str, default='all', help="Dispersion loss location.")
     ap.add_argument("--tau_infonce_l2", type=float, default=0.5, help="Temperature.")
     ap.add_argument("--tau_infonce_cos", type=float, default=0.5, help="Temperature.")
-    ap.add_argument("--num_fewshot", type=int, default=1, help="Eval num_fewshot.")
+    ap.add_argument("--num_fewshot", type=int, default=5, help="Eval num_fewshot.")
     ap.add_argument("--max_eval_samples", type=int, default=200, help="Eval max_eval_samples.")
     ap.add_argument("--num_ckpt", type=int, default=12, help="Number of checkpoints.")
     ap.add_argument("--only_save_last_model", action="store_true")
