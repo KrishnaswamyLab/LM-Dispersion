@@ -212,15 +212,15 @@ if __name__ == '__main__':
                 bars_heights.append(curr_best)
                 bars_colors.append(cmap(coeff_logscaled))
 
-            ax_lines.set_xlabel("Step", fontsize=15)
-            ax_lines.set_ylabel(metric_name, fontsize=15)
+            ax_lines.set_xlabel("Step", fontsize=12)
+            ax_lines.set_ylabel(metric_name, fontsize=12)
 
             bars = ax_bars.bar(np.arange(len(bars_labels)), bars_heights, color=bars_colors, alpha=0.8, label=bars_labels)
             ax_bars.axhline(y=bars_heights[1], linestyle='--', linewidth=2, color=bars_colors[1], alpha=0.8)
             ax_bars.set_xticks(np.arange(len(bars_labels)))
             ax_bars.set_xticklabels([extract_coeff_from_label(label) for label in bars_labels], rotation=0, ha='center', fontsize=9)
-            ax_bars.set_ylabel(metric_name, fontsize=15)
-            ax_bars.set_xlabel('Dispersion Coefficient', fontsize=15)
+            ax_bars.set_ylabel(metric_name, fontsize=12)
+            ax_bars.set_xlabel('Dispersion Coefficient', fontsize=12)
             ax_bars.set_ylim(metric_ylim_bars[metric_name])
 
             # Annotate the values.

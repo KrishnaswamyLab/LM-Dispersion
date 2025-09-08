@@ -402,20 +402,17 @@ def main(args):
     max_ctx = getattr(model.config, "n_positions", getattr(model.config, "max_position_embeddings", 1024))
     tokenizer.model_max_length = max_ctx
 
-    block_size = args.block_size or min(1024, getattr(tokenizer, "model_max_length", 1024))
-    block_size = min(block_size, 1024)
-
     lm_train, lm_val = make_splits(
         dataset_name=args.dataset_name,
         dataset_config=args.dataset_config,
         hf_token=args.hf_token,
         tokenizer=tokenizer,
-        block_size=block_size,
+        block_size=args.block_size,
         seed=args.seed,
     )
 
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
-    tokens_per_step = args.per_device_train_batch_size * block_size * args.gradient_accumulation_steps * world_size
+    tokens_per_step = args.per_device_train_batch_size * args.block_size * args.gradient_accumulation_steps * world_size
     if tokens_per_step <= 0:
         raise ValueError("tokens_per_step computed as 0; check batch size/accumulation/block_size.")
     max_steps = math.ceil(args.train_tokens / tokens_per_step)
@@ -430,9 +427,11 @@ def main(args):
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.lr,
         weight_decay=0.01,
+        max_grad_norm=1.0,
         max_steps=max_steps,
         optim="adamw_torch",
         lr_scheduler_type="cosine",
+        lr_scheduler_kwargs={"num_cycles": 0.5},
         log_level="info",
         logging_steps=max(1, max_steps // 20),
         log_on_each_node=False,
@@ -443,7 +442,7 @@ def main(args):
         bf16=bf16,
         dataloader_num_workers=args.num_workers,
         remove_unused_columns=True,
-        warmup_ratio=0.05,
+        warmup_ratio=0.1,
     )
 
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
@@ -469,7 +468,7 @@ def main(args):
     log(f"Model: {args.model_name}", filepath=args.log_path)
     log(str(model.config), filepath=args.log_path)
     log(f"Dataset: {args.dataset_name} ({args.dataset_config})", filepath=args.log_path)
-    log(f"Block size: {block_size}", filepath=args.log_path)
+    log(f"Block size: {args.block_size}", filepath=args.log_path)
     log(f"Per-device batch: {args.per_device_train_batch_size} | Grad accum: {args.gradient_accumulation_steps} | World size: {world_size}", filepath=args.log_path)
     log(f"Token budget: {args.train_tokens} | Tokens/step: {tokens_per_step} | Max steps: {max_steps}", filepath=args.log_path)
     log(f"Precision: {'bf16' if bf16 else ('fp16' if fp16 else 'fp32')}", filepath=args.log_path)
@@ -522,6 +521,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Mid-train GPT-2 with a token budget.")
     ap.add_argument("--model_name", type=str, default="gpt2",
                     help="Hugging Face model id to start from (pretrained).")
+    ap.add_argument("--block_size", type=int, default=1024, help="Context length.")
     ap.add_argument("--dataset_name", type=str, default="Salesforce/wikitext",
                     help="Hugging Face dataset id.")
     ap.add_argument("--dataset_config", type=str,
@@ -542,10 +542,8 @@ if __name__ == "__main__":
     ap.add_argument("--num_ckpt", type=int, default=12, help="Number of checkpoints.")
     ap.add_argument("--only_save_last_model", action="store_true")
     ap.add_argument("--num_workers", type=int, default=8, help="Number of dataloader workers.")
-    ap.add_argument("--block_size", type=int, default=None,
-                    help="Context length (default: min(1024, tokenizer max)).")
     ap.add_argument("--per_device_train_batch_size", type=int, default=16)
-    ap.add_argument("--gradient_accumulation_steps", type=int, default=4)
+    ap.add_argument("--gradient_accumulation_steps", type=int, default=16)
     ap.add_argument("--seed", type=int, default=1)
 
     args = ap.parse_args()
