@@ -17,16 +17,16 @@ results_dict = {
 empty_metrics_dict = {
     'step': [],
     'paloma_wikitext_103\nword_perplexity,none': {'mean': [], 'std': []},
-    'mmlu\nacc,none': {'mean': [], 'std': []},
+    'hellaswag\nacc_norm,none': {'mean': [], 'std': []},
     'lambada_openai\nacc,none': {'mean': [], 'std': []},
     'lambada_standard\nacc,none': {'mean': [], 'std': []},
-    'medmcqa\nacc,none': {'mean': [], 'std': []},
-    'arc_challenge\nacc,none': {'mean': [], 'std': []},
-    'winogrande\nacc,none': {'mean': [], 'std': []},
     'piqa\nacc,none': {'mean': [], 'std': []},
     'truthfulqa_mc2\nacc,none': {'mean': [], 'std': []},
-    'hellaswag\nacc_norm,none': {'mean': [], 'std': []},
+    'winogrande\nacc,none': {'mean': [], 'std': []},
+    'arc_challenge\nacc,none': {'mean': [], 'std': []},
     'gsm8k\nexact_match,flexible-extract': {'mean': [], 'std': []},
+    'medmcqa\nacc,none': {'mean': [], 'std': []},
+    'mmlu\nacc,none': {'mean': [], 'std': []},
 }
 
 
