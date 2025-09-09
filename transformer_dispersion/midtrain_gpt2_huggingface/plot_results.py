@@ -95,14 +95,14 @@ if __name__ == '__main__':
     ap.add_argument("--dataset_name", type=str, default="Salesforce/wikitext",
                     help="Hugging Face dataset id.")
     args = ap.parse_args()
+    lora_suffix = "_lora" if args.lora else ""
 
     result_folder = './results/'
-    figure_lines_save_path = f'./figures/results_lines_{args.model_name}.png'
-    figure_bars_save_path = f'./figures/results_bars_{args.model_name}.png'
+    figure_lines_save_path = f'./figures/results_lines_{args.model_name}{lora_suffix}.png'
+    figure_bars_save_path = f'./figures/results_bars_{args.model_name}{lora_suffix}.png'
 
     os.makedirs(os.path.dirname(figure_lines_save_path), exist_ok=True)
     os.makedirs(os.path.dirname(figure_bars_save_path), exist_ok=True)
-    lora_suffix = "_lora" if args.lora else ""
     run_folder_list = sorted(glob(os.path.join(result_folder, f'midtrain_{args.model_name}{lora_suffix}_{"-".join(args.dataset_name.split("/"))}_*')))
 
     for run_folder in run_folder_list:

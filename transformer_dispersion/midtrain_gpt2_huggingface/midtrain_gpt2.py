@@ -4,6 +4,7 @@ import json
 import tempfile
 import math
 import argparse
+from copy import deepcopy
 import torch
 from lm_eval import simple_evaluate
 from datasets import load_dataset, concatenate_datasets
@@ -185,9 +186,12 @@ class LMEvalCallback(TrainerCallback):
                 is_peft_model = hasattr(save_model, 'peft_config')
                 if is_peft_model:
                     log(f"[LMEval] Detected PEFT model, merging adapters for evaluation...", filepath=self.log_path)
-                    save_model = save_model.merge_and_unload()
-
-                save_model.save_pretrained(tmp)
+                    model_copy = deepcopy(save_model).to("cpu")
+                    merged = model_copy.merge_and_unload()
+                    merged.save_pretrained(tmp)
+                    del model_copy, merged
+                else:
+                    save_model.save_pretrained(tmp)
 
                 self.tok.save_pretrained(tmp)
 
@@ -268,35 +272,6 @@ class LMEvalCallback(TrainerCallback):
         if self.eval_at_end:
             model = kwargs["model"]
             self._run_evaluation(args, state, model, "end")
-
-@torch.no_grad()
-def eval_perplexity_with_trainer(trainer, eval_dataset):
-    metrics = trainer.evaluate(eval_dataset=eval_dataset)
-    loss = metrics.get("eval_loss", None)
-    if loss is None:
-        return None, metrics
-    loss_clamped = min(loss, 20.0)
-    ppl = math.exp(loss_clamped)
-    metrics["eval_ppl"] = ppl
-    return ppl, metrics
-
-def choice_logprob(model, device, tokenizer, prompt_text, choice_text):
-    combined = prompt_text + " " + str(choice_text)
-    enc = tokenizer(
-        combined,
-        add_special_tokens=False,
-        truncation=True,
-        max_length=tokenizer.model_max_length,
-        return_tensors="pt",
-    )
-    input_ids = enc["input_ids"].to(device)
-    choice_ids = tokenizer(" " + str(choice_text), add_special_tokens=False)["input_ids"]
-    k = min(len(choice_ids), input_ids.size(-1))
-    labels = torch.full_like(input_ids, -100)
-    labels[:, -k:] = input_ids[:, -k:]
-    out = model(input_ids=input_ids, labels=labels)
-    total_logprob = -out.loss.item() * k
-    return total_logprob
 
 
 class CausalLMLoss(torch.nn.Module):
@@ -426,10 +401,9 @@ def main(args):
         lora_config = LoraConfig(
             inference_mode=False,
             r=16,
-            lora_alpha=64,
+            lora_alpha=32,
             lora_dropout=0.05,
             target_modules=["c_attn", "c_proj", "c_fc"],  # for GPT-2, adjust for other models
-            modules_to_save=["lm_head"],
             bias='none',
             task_type=TaskType.CAUSAL_LM,
         )
@@ -507,13 +481,6 @@ def main(args):
     log(f"Token budget: {args.train_tokens} | Tokens/step: {tokens_per_step} | Max steps: {max_steps}", filepath=args.log_path)
     log(f"Precision: {'bf16' if bf16 else ('fp16' if fp16 else 'fp32')}", filepath=args.log_path)
 
-    log(f"\n\nEvaluation before mid-training.", filepath=args.log_path)
-    ppl, eval_metrics = eval_perplexity_with_trainer(trainer, lm_val)
-    if ppl is not None:
-        log(f"[Eval] Validation Perplexity: {ppl:.3f}", filepath=args.log_path)
-    if eval_metrics:
-        log(f"[Eval] Raw eval metrics: {eval_metrics}", filepath=args.log_path)
-
     # https://github.com/EleutherAI/lm-evaluation-harness/tree/main/lm_eval/tasks
     zeroshot_tasks = [
         "hellaswag",
@@ -539,13 +506,6 @@ def main(args):
                                         save_on_eval=not args.no_save_model))
 
     trainer.train()
-
-    log(f"\n\nEvaluation after mid-training.", filepath=args.log_path)
-    ppl, eval_metrics = eval_perplexity_with_trainer(trainer, lm_val)
-    if ppl is not None:
-        log(f"[Eval] Validation Perplexity: {ppl:.3f}", filepath=args.log_path)
-    if eval_metrics:
-        log(f"[Eval] Raw eval metrics: {eval_metrics}", filepath=args.log_path)
 
     log(f"Done. Saved to {args.output_dir}", filepath=args.log_path)
 
