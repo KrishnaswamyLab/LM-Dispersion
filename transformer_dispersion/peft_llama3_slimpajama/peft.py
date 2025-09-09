@@ -18,6 +18,7 @@ from transformers import (
     TrainerCallback,
     TrainingArguments,
 )
+from peft import LoraConfig, get_peft_model, TaskType, PeftModel
 from dispersion import DispersionLoss
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -216,12 +217,22 @@ class LMEvalCallback(TrainerCallback):
                 stage_str = f" ({stage})" if stage else ""
                 log(f"[LMEval] Running evaluation{stage_str} at step {state.global_step} (world_size={world_size}, device={device_str})...", filepath=self.log_path)
 
-                # Save model - handle distributed training
+                # Save model - handle distributed training and LoRA
                 if hasattr(model, 'module'):
                     # Model is wrapped (e.g., DDP, FSDP)
-                    model.module.save_pretrained(tmp)
+                    if hasattr(model.module, 'merge_and_unload'):
+                        # LoRA model - merge adapters and save full model for evaluation
+                        merged_model = model.module.merge_and_unload()
+                        merged_model.save_pretrained(tmp)
+                    else:
+                        model.module.save_pretrained(tmp)
                 else:
-                    model.save_pretrained(tmp)
+                    if hasattr(model, 'merge_and_unload'):
+                        # LoRA model - merge adapters and save full model for evaluation
+                        merged_model = model.merge_and_unload()
+                        merged_model.save_pretrained(tmp)
+                    else:
+                        model.save_pretrained(tmp)
                 self.tok.save_pretrained(tmp)
 
                 res = simple_evaluate(
@@ -251,10 +262,21 @@ class LMEvalCallback(TrainerCallback):
                 if self.save_on_eval:
                     ckpt_dir = os.path.join(args.output_dir, f"eval_ckpt_{stage or 'interval'}_step{state.global_step}")
                     os.makedirs(ckpt_dir, exist_ok=True)
+                    
+                    # Save LoRA adapters or full model
                     if hasattr(model, 'module'):
-                        model.module.save_pretrained(ckpt_dir, save_safetensors=getattr(args, "save_safetensors", True))
+                        if hasattr(model.module, 'save_pretrained'):
+                            # For LoRA models, this saves only the adapter weights
+                            model.module.save_pretrained(ckpt_dir, save_safetensors=getattr(args, "save_safetensors", True))
+                        else:
+                            model.module.save_pretrained(ckpt_dir, save_safetensors=getattr(args, "save_safetensors", True))
                     else:
-                        model.save_pretrained(ckpt_dir, save_safetensors=getattr(args, "save_safetensors", True))
+                        if hasattr(model, 'save_pretrained'):
+                            # For LoRA models, this saves only the adapter weights
+                            model.save_pretrained(ckpt_dir, save_safetensors=getattr(args, "save_safetensors", True))
+                        else:
+                            model.save_pretrained(ckpt_dir, save_safetensors=getattr(args, "save_safetensors", True))
+                    
                     self.tok.save_pretrained(ckpt_dir)
                     log(f"[LMEval] Weights saved to {ckpt_dir}", filepath=self.log_path)
 
@@ -427,6 +449,19 @@ def main(args):
         delattr(config, "loss_type")
     model = AutoModelForCausalLM.from_pretrained(args.model_name, config=config)
 
+    # Apply LoRA if enabled
+    if args.use_lora:
+        lora_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            target_modules=args.lora_target_modules,  # None means auto-detect
+            bias="none",
+        )
+        model = get_peft_model(model, lora_config)
+        model.print_trainable_parameters()
+
     max_ctx = getattr(model.config, "n_positions", getattr(model.config, "max_position_embeddings", 1024))
     tokenizer.model_max_length = max_ctx
 
@@ -495,6 +530,11 @@ def main(args):
 
     log("=== Mid-training setup ===", filepath=args.log_path)
     log(f"Model: {args.model_name}", filepath=args.log_path)
+    if args.use_lora:
+        log(f"LoRA Configuration: r={args.lora_r}, alpha={args.lora_alpha}, dropout={args.lora_dropout}", filepath=args.log_path)
+        log("LoRA target modules: auto-detected by PEFT", filepath=args.log_path)
+    else:
+        log("Using full model fine-tuning (no LoRA)", filepath=args.log_path)
     log(str(model.config), filepath=args.log_path)
     log(f"Dataset: {args.dataset_name} ({args.dataset_config})", filepath=args.log_path)
     log(f"Block size: {block_size}", filepath=args.log_path)
@@ -530,7 +570,22 @@ def main(args):
                                         every_n_steps=log_every_n_steps))
 
     trainer.train()
-    trainer.save_model(args.output_dir)
+    
+    # Save the final model
+    if args.use_lora:
+        # Save LoRA adapters
+        model.save_pretrained(args.output_dir)
+        # Also save the merged model for easy inference
+        merged_model = model.merge_and_unload()
+        merged_output_dir = os.path.join(args.output_dir, "merged_model")
+        os.makedirs(merged_output_dir, exist_ok=True)
+        merged_model.save_pretrained(merged_output_dir)
+        tokenizer.save_pretrained(merged_output_dir)
+        log(f"LoRA adapters saved to {args.output_dir}", filepath=args.log_path)
+        log(f"Merged model saved to {merged_output_dir}", filepath=args.log_path)
+    else:
+        trainer.save_model(args.output_dir)
+    
     tokenizer.save_pretrained(args.output_dir)
 
     log(f"\n\nEvaluation after mid-training.", filepath=args.log_path)
@@ -574,9 +629,22 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--use_streaming", action="store_true",
                     help="Use streaming dataset loading (default: False). Useful for very large datasets.")
+    
+    # LoRA/PEFT arguments
+    ap.add_argument("--use_lora", action="store_true", default=True,
+                    help="Use LoRA (Low-Rank Adaptation) for parameter-efficient fine-tuning (default: True).")
+    ap.add_argument("--lora_r", type=int, default=16,
+                    help="LoRA attention dimension (rank). Higher values = more parameters but potentially better performance.")
+    ap.add_argument("--lora_alpha", type=int, default=32,
+                    help="LoRA scaling parameter. Typically 2x the rank.")
+    ap.add_argument("--lora_dropout", type=float, default=0.1,
+                    help="LoRA dropout rate.")
+    ap.add_argument("--lora_target_modules", type=str, nargs="+", default=None,
+                    help="Target modules for LoRA. If None, will use default modules for the model type.")
 
     args = ap.parse_args()
 
-    args.output_dir = f'./results/midtrain_{args.model_name}_{"-".join(args.dataset_name.split("/"))}_lr-{args.lr}_token-{args.train_tokens}_disp-{args.dispersion}-{args.dispersion_coeff}-{args.dispersion_loc}_fewshot-{args.num_fewshot}_maxsample-{args.max_eval_samples}_seed-{args.seed}'
+    lora_suffix = f"_lora-r{args.lora_r}-a{args.lora_alpha}" if args.use_lora else "_full"
+    args.output_dir = f'./results/midtrain_{args.model_name}_{"-".join(args.dataset_name.split("/"))}_lr-{args.lr}_token-{args.train_tokens}_disp-{args.dispersion}-{args.dispersion_coeff}-{args.dispersion_loc}_fewshot-{args.num_fewshot}_maxsample-{args.max_eval_samples}_seed-{args.seed}{lora_suffix}'
     args.log_path = os.path.join(args.output_dir, 'log.txt')
     main(args)
