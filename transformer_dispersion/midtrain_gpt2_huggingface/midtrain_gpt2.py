@@ -16,6 +16,7 @@ from transformers import (
     TrainerCallback,
     TrainingArguments,
 )
+from peft import LoraConfig, get_peft_model, TaskType
 from dispersion import DispersionLoss
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -176,9 +177,19 @@ class LMEvalCallback(TrainerCallback):
                 # Save model - handle distributed training
                 if hasattr(model, 'module'):
                     # Model is wrapped (e.g., DDP, FSDP)
-                    model.module.save_pretrained(tmp)
+                    save_model = model.module
                 else:
-                    model.save_pretrained(tmp)
+                    save_model = model
+
+                # Check if this is a PEFT model (LoRA)
+                is_peft_model = hasattr(save_model, 'peft_config') or hasattr(save_model, 'base_model')
+
+                if is_peft_model:
+                    log(f"[LMEval] Detected PEFT model, merging adapters for evaluation...", filepath=self.log_path)
+                    save_model = save_model.merge_and_unload()
+
+                save_model.save_pretrained(tmp)
+
                 self.tok.save_pretrained(tmp)
 
                 res_zeroshot = simple_evaluate(
@@ -399,8 +410,33 @@ def main(args):
         delattr(config, "loss_type")
     model = AutoModelForCausalLM.from_pretrained(args.model_name, config=config, use_auth_token=args.hf_token)
 
-    max_ctx = getattr(model.config, "n_positions", getattr(model.config, "max_position_embeddings", 1024))
+    max_ctx = getattr(model.config, "n_positions",
+              getattr(model.config, "max_position_embeddings",
+              getattr(model.config, "max_sequence_length", 1024)))
     tokenizer.model_max_length = max_ctx
+
+    vocab_size = len(tokenizer)
+    model.resize_token_embeddings(vocab_size)
+    model.config.vocab_size = vocab_size
+    if hasattr(model, "base_model") and hasattr(model.base_model, "config"):
+        model.base_model.config.vocab_size = vocab_size
+
+    if args.lora:
+        log("Applying LoRA configuration...", filepath=args.log_path)
+        model.config.use_cache = False
+        lora_config = LoraConfig(
+            inference_mode=False,
+            r=16,
+            lora_alpha=64,
+            lora_dropout=0.05,
+            target_modules=["c_attn", "c_proj", "c_fc"],  # for GPT-2, adjust for other models
+            modules_to_save=["lm_head"],
+            bias='none',
+            task_type=TaskType.CAUSAL_LM,
+        )
+        model = get_peft_model(model, lora_config)
+        model.print_trainable_parameters()
+        log(f"LoRA applied. Trainable parameters: {model.get_nb_trainable_parameters()}", filepath=args.log_path)
 
     lm_train, lm_val = make_splits(
         dataset_name=args.dataset_name,
@@ -447,8 +483,6 @@ def main(args):
     )
 
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
-
-    model.resize_token_embeddings(len(tokenizer))
 
     trainer = CustomLossTrainer(
         model=model,
@@ -520,6 +554,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Mid-train GPT-2 with a token budget.")
     ap.add_argument("--model_name", type=str, default="gpt2",
                     help="Hugging Face model id to start from (pretrained).")
+    ap.add_argument("--lora", action="store_true", help="Use LoRA (Low-Rank Adaptation) instead of full fine-tuning")
     ap.add_argument("--block_size", type=int, default=1024, help="Context length.")
     ap.add_argument("--dataset_name", type=str, default="Salesforce/wikitext",
                     help="Hugging Face dataset id.")
@@ -547,6 +582,7 @@ if __name__ == "__main__":
 
     args = ap.parse_args()
 
-    args.output_dir = f'./results/midtrain_{args.model_name}_{"-".join(args.dataset_name.split("/"))}_lr-{args.lr}_token-{args.train_tokens}_disp-{args.dispersion}-{args.dispersion_coeff}-{args.dispersion_loc}_fewshot-{args.num_fewshot}_maxsample-{args.max_eval_samples}_seed-{args.seed}'
+    lora_suffix = "_lora" if args.lora else ""
+    args.output_dir = f'./results/midtrain_{args.model_name}{lora_suffix}_{"-".join(args.dataset_name.split("/"))}_lr-{args.lr}_token-{args.train_tokens}_disp-{args.dispersion}-{args.dispersion_coeff}-{args.dispersion_loc}_fewshot-{args.num_fewshot}_maxsample-{args.max_eval_samples}_seed-{args.seed}'
     args.log_path = os.path.join(args.output_dir, 'log.txt')
     main(args)
