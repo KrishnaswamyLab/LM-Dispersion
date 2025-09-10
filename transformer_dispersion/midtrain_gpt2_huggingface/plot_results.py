@@ -17,18 +17,17 @@ results_dict = {
 empty_metrics_dict = {
     'step': [],
     'paloma_wikitext_103\nword_perplexity,none': {'mean': [], 'std': []},
-    # 'hellaswag\nacc_norm,none': {'mean': [], 'std': []},
+    'hellaswag\nacc_norm,none': {'mean': [], 'std': []},
     'lambada_openai\nacc,none': {'mean': [], 'std': []},
-    'lambada_standard\nacc,none': {'mean': [], 'std': []},
+    # 'lambada_standard\nacc,none': {'mean': [], 'std': []},
     # 'piqa\nacc,none': {'mean': [], 'std': []},
     'truthfulqa_mc2\nacc,none': {'mean': [], 'std': []},
     'winogrande\nacc,none': {'mean': [], 'std': []},
     'arc_challenge\nacc,none': {'mean': [], 'std': []},
-    'gsm8k\nexact_match,flexible-extract': {'mean': [], 'std': []},
+    # 'gsm8k\nexact_match,flexible-extract': {'mean': [], 'std': []},
     'medmcqa\nacc,none': {'mean': [], 'std': []},
     'mmlu\nacc,none': {'mean': [], 'std': []},
 }
-
 
 def sort_by_step(steps, means, stds):
     order = np.argsort(np.array(steps))
@@ -39,41 +38,99 @@ def run_label(dispersion, coeff, loc):
         return 'None'
     return f'{dispersion}-{coeff}-{loc}'
 
-def extract_coeff_from_label(str):
-    if str == 'Default loss':
+def extract_coeff_from_label(s):
+    if s == 'Default loss':
         return 0
-    elif str == 'No mid-training':
+    elif s == 'No mid-training':
         return 'N/A'
     else:
-        return float(str.split('-')[1].split('-')[0])
+        return float(s.split('-')[1].split('-')[0])
 
-def best_over_history(means, stds, metric_name):
-    if 'perplexity' in metric_name.lower():
-        i = int(np.nanargmin(means))
-    else:
-        i = int(np.nanargmax(means))
-    return float(means[i]), (np.nan if np.isnan(stds[i]) else float(stds[i]))
+def _num_coeff(x):
+    try: return float(x)
+    except: return np.inf
 
-def find_metric_ylims(results_dict, all_metric_names, baseline_idx):
+def compute_best_steps(results_dict, selection_metrics):
+    best_idx_per_run = {}
+    sorted_cache = {}
+
+    for ridx in range(len(results_dict['metrics'])):
+        steps = np.asarray(results_dict['metrics'][ridx]['step'], dtype=int)
+        if steps.size == 0:
+            best_idx_per_run[ridx] = None
+            continue
+        order = np.argsort(steps)
+        steps_sorted = steps[order]
+        scores = np.full_like(steps_sorted, fill_value=np.nan, dtype=float)
+
+        per_metric_vals = {}
+        for m in selection_metrics:
+            means = np.asarray(results_dict['metrics'][ridx][m]['mean'], dtype=float)
+            if means.size == 0:
+                continue
+            means = means[order]
+            per_metric_vals[m] = means
+
+        for j in range(len(steps_sorted)):
+            vals = []
+            for m in selection_metrics:
+                if m in per_metric_vals and np.isfinite(per_metric_vals[m][j]):
+                    vals.append(per_metric_vals[m][j])
+            if len(vals) > 0:
+                scores[j] = float(np.mean(vals))
+
+        if np.all(~np.isfinite(scores)):
+            best_idx_per_run[ridx] = None
+        else:
+            best_idx_per_run[ridx] = int(np.nanargmax(scores))
+
+        sorted_cache[(ridx, '__steps__')] = steps_sorted
+        for m in results_dict['metrics'][ridx].keys():
+            if m == 'step': continue
+            means = np.asarray(results_dict['metrics'][ridx][m]['mean'], dtype=float)
+            stds  = np.asarray(results_dict['metrics'][ridx][m]['std'], dtype=float)
+            if means.size == 0:
+                sorted_cache[(ridx, m)] = (steps_sorted, means, stds)
+            else:
+                sorted_cache[(ridx, m)] = sort_by_step(steps, means, stds)
+
+    return best_idx_per_run, sorted_cache
+
+def value_at_idx_pct(results_dict, sorted_cache, ridx, metric_name, step_idx, initial=False):
+    steps_sorted = sorted_cache[(ridx, '__steps__')]
+    means = np.asarray(results_dict['metrics'][ridx][metric_name]['mean'], dtype=float)
+    if means.size == 0 or steps_sorted.size == 0:
+        return np.nan
+    _, means_sorted, _ = sorted_cache[(ridx, metric_name)]
+    if means_sorted.size == 0:
+        return np.nan
+    idx = 0 if initial else step_idx
+    if idx is None or idx >= means_sorted.size:
+        return np.nan
+    return float(means_sorted[idx]) * 100.0
+
+def find_metric_ylims_by_best_step(results_dict, all_metric_names, baseline_idx, best_idx_per_run, sorted_cache):
     metric_ylim_bars = {m: [np.inf, -np.inf] for m in all_metric_names}
-
     for m in all_metric_names:
         cand = []
-        for idx in range(len(results_dict['metrics'])):
-            if idx == baseline_idx:
-                # Take the initial result too (before mid-traininig).
-                baseline_steps = results_dict['metrics'][idx]['step']
-                baseline_means = results_dict['metrics'][idx][m]['mean']
-                baseline_stds  = results_dict['metrics'][idx][m]['std']
-                baseline_steps, baseline_means, baseline_stds = sort_by_step(baseline_steps, baseline_means, baseline_stds)
-                cand.append(baseline_means[0])
-            curr_means = np.asarray(results_dict['metrics'][idx][m]['mean'], dtype=float)
-            if curr_means.size:
-                curr_best, _ = best_over_history(curr_means, np.asarray(results_dict['metrics'][idx][m]['std']), m)
-                cand.append(curr_best)
-
+        # No mid-training initial
+        steps_b = sorted_cache[(baseline_idx, '__steps__')]
+        _, means_b, _ = sorted_cache[(baseline_idx, m)]
+        if means_b.size > 0:
+            cand.append(float(means_b[0]))
+        # Default loss best overall
+        bidx = best_idx_per_run[baseline_idx]
+        if bidx is not None and means_b.size > bidx:
+            cand.append(float(means_b[bidx]))
+        # Other runs at their best overall
+        for ridx in range(len(results_dict['metrics'])):
+            if ridx == baseline_idx: continue
+            _, means_r, _ = sorted_cache[(ridx, m)]
+            j = best_idx_per_run[ridx]
+            if means_r.size > 0 and j is not None and j < means_r.size and np.isfinite(means_r[j]):
+                cand.append(float(means_r[j]))
         if cand:
-            vmin = np.nanmin(cand); vmax = np.nanmax(cand)
+            vmin = float(np.nanmin(cand)); vmax = float(np.nanmax(cand))
             metric_ylim_bars[m][0] = vmin; metric_ylim_bars[m][1] = vmax
 
     for m, (lo, hi) in metric_ylim_bars.items():
@@ -87,25 +144,6 @@ def find_metric_ylims(results_dict, all_metric_names, baseline_idx):
 
     return metric_ylim_bars
 
-def _num_coeff(x):
-    try: return float(x)
-    except: return np.inf
-
-def _best_or_initial_in_pct(results_dict, idx, metric_name, initial=False):
-    means = np.asarray(results_dict['metrics'][idx][metric_name]['mean'], dtype=float)
-    stds  = np.asarray(results_dict['metrics'][idx][metric_name]['std'], dtype=float)
-    steps = np.asarray(results_dict['metrics'][idx]['step'], dtype=int)
-    if steps.size == 0: return np.nan
-    order = np.argsort(steps)
-    means = means[order]
-    stds  = stds[order]
-    if initial:
-        return float(means[0]) * 100 if means.size else np.nan
-    if means.size:
-        m, _ = best_over_history(means, stds, metric_name)
-        return float(m) * 100
-    return np.nan
-
 def render_latex_table_simple(
     results_dict,
     metric_names,
@@ -115,7 +153,9 @@ def render_latex_table_simple(
     model_name,
     lora_suffix,
     decimals=1,
-    out_path=None
+    out_path=None,
+    best_idx_per_run=None,
+    sorted_cache=None,
 ):
     rows = []
     rows.append({"method": "Pretrained (no mid-training)", "disp": "None", "coeff": "N/A", "loc": "-", "src": ("baseline","initial")})
@@ -132,9 +172,11 @@ def render_latex_table_simple(
                 "src":    ("run","best"),
             })
 
-    ref = {m: _best_or_initial_in_pct(results_dict, baseline_idx, m, initial=True) for m in metric_names}
+    ref = {}
+    for m in metric_names:
+        val = value_at_idx_pct(results_dict, sorted_cache, baseline_idx, m, step_idx=None, initial=True)
+        ref[m] = val
 
-    # Add an Average column
     align = "l c c " + " ".join(["c"]*len(metric_names)) + " c"
     headers = [m.replace("\n"," ").replace(",", " ") for m in metric_names]
     headers.append("Average")
@@ -154,10 +196,11 @@ def render_latex_table_simple(
         for m in metric_names:
             if row['src'] == ("baseline","initial"):
                 val = ref[m]
+                base = ref[m]
                 cell = f"{val:.{decimals}f}" if np.isfinite(val) else "N/A"
-                base = ref[m]  # for averaging baseline vs itself; we won't show diff on this row
             elif row['src'] == ("baseline","best"):
-                val = _best_or_initial_in_pct(results_dict, baseline_idx, m, initial=False)
+                bidx = best_idx_per_run[baseline_idx]
+                val = value_at_idx_pct(results_dict, sorted_cache, baseline_idx, m, step_idx=bidx, initial=False)
                 base = ref[m]
                 cell = f"{val:.{decimals}f}"
                 if np.isfinite(base):
@@ -166,7 +209,9 @@ def render_latex_table_simple(
                     color = "forestgreen" if diff >= 0 else "crimson"
                     cell += f" \\textcolor{{{color}}}{{({sgn}{diff:.{decimals}f})}}"
             else:
-                val = _best_or_initial_in_pct(results_dict, row['idx'], m, initial=False)
+                ridx = row['idx']
+                j = best_idx_per_run[ridx]
+                val = value_at_idx_pct(results_dict, sorted_cache, ridx, m, step_idx=j, initial=False)
                 base = ref[m]
                 cell = f"{val:.{decimals}f}"
                 if np.isfinite(base):
@@ -181,28 +226,20 @@ def render_latex_table_simple(
             if np.isfinite(base):
                 bases_for_avg.append(base)
 
-        # Average column with diff
         if vals_for_avg:
             avg_val = float(np.mean(vals_for_avg))
-            if bases_for_avg:
-                avg_base = float(np.mean(bases_for_avg))
-            else:
-                avg_base = np.nan
-
+            avg_base = float(np.mean(bases_for_avg)) if bases_for_avg else np.nan
             if row['src'] == ("baseline","initial") or not np.isfinite(avg_base):
-                # Baseline initial row: show value only (no diff), or if base is NaN
                 avg_cell = f"{avg_val:.{decimals}f}"
             else:
-                avg_cell = f"{avg_val:.{decimals}f}"
                 diff = avg_val - avg_base
                 sgn  = "+" if diff >= 0 else ""
                 color = "forestgreen" if diff >= 0 else "crimson"
-                avg_cell += f" \\textcolor{{{color}}}{{({sgn}{diff:.{decimals}f})}}"
+                avg_cell = f"{avg_val:.{decimals}f} \\textcolor{{{color}}}{{({sgn}{diff:.{decimals}f})}}"
         else:
             avg_cell = "N/A"
 
         cells.append(avg_cell)
-
         lines.append(left + " & " + " & ".join(cells) + r" \\")
     lines.append(r"\bottomrule")
     lines.append(r"\end{tabular}")
@@ -217,7 +254,6 @@ def render_latex_table_simple(
     print("\n===== LaTeX table (copy into Overleaf) =====\n")
     print(table_tex)
     print(f"\n[Saved LaTeX table to: {out_path}]\n")
-
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description="Mid-train GPT-2 with a token budget.")
@@ -278,17 +314,24 @@ if __name__ == '__main__':
     if baseline_idx is None:
         raise RuntimeError("No baseline run found with dispersion == 'None'.")
 
-    # group indices by dispersion (excluding baseline)
     rows_by_dispersion = {}
     for i, d in enumerate(results_dict['dispersion']):
         if i == baseline_idx:
             continue
         rows_by_dispersion.setdefault(d, []).append(i)
 
-    metric_ylim_bars = find_metric_ylims(results_dict=results_dict, all_metric_names=all_metric_names, baseline_idx=baseline_idx)
-
-    # enforce the requested row order
     row_order = [d for d in ["Covariance", "Hinge", "InfoNCE_l2", "InfoNCE_cosine"] if d in rows_by_dispersion]
+
+    selection_metrics = [m for m in all_metric_names if 'perplexity' not in m.lower()]
+    best_idx_per_run, sorted_cache = compute_best_steps(results_dict, selection_metrics)
+
+    metric_ylim_bars = find_metric_ylims_by_best_step(
+        results_dict=results_dict,
+        all_metric_names=all_metric_names,
+        baseline_idx=baseline_idx,
+        best_idx_per_run=best_idx_per_run,
+        sorted_cache=sorted_cache,
+    )
 
     plt.rcParams["font.family"] = "sans-serif"
     plt.rcParams["xtick.labelsize"] = 12
@@ -298,7 +341,6 @@ if __name__ == '__main__':
 
     for row_idx, row_disp in enumerate(row_order):
         run_indices = rows_by_dispersion[row_disp]
-        # colors = ["#00C100", "#CE0E00", "#C8A300", "#005BC3"]
         cmap = cm.Reds
 
         for metric_idx, metric_name in enumerate(all_metric_names):
@@ -311,54 +353,49 @@ if __name__ == '__main__':
             ax_bars.spines["right"].set_visible(False)
             bars_labels, bars_heights, bars_colors = [], [], []
 
-            # Overlay baseline on every plot.
-            baseline_steps = results_dict['metrics'][baseline_idx]['step']
-            baseline_means = results_dict['metrics'][baseline_idx][metric_name]['mean']
-            baseline_stds  = results_dict['metrics'][baseline_idx][metric_name]['std']
-            baseline_steps, baseline_means, baseline_stds = sort_by_step(baseline_steps, baseline_means, baseline_stds)
-            baseline_best, _ = best_over_history(baseline_means, baseline_stds, metric_name)
-            baseline_label = 'Default loss'
-            # Initial performance before mid-training.
-            bars_labels.append('No mid-training')
-            bars_heights.append(baseline_means[0])
-            bars_colors.append('lightgray')
+            steps_b = sorted_cache[(baseline_idx, '__steps__')]
+            _, means_b, _ = sorted_cache[(baseline_idx, metric_name)]
+            if means_b.size > 0:
+                bars_labels.append('No mid-training')
+                bars_heights.append(float(means_b[0]))
+                bars_colors.append('lightgray')
 
-            # Mid-training with default loss.
-            bars_labels.append(baseline_label)
-            bars_heights.append(baseline_best)
-            bars_colors.append('gray')
-            ax_lines.plot(baseline_steps, baseline_means, linestyle='--', linewidth=2, label=baseline_label, color='black', alpha=0.5)
+            b_best = best_idx_per_run[baseline_idx]
+            if b_best is not None and means_b.size > b_best:
+                bars_labels.append('Default loss')
+                bars_heights.append(float(means_b[b_best]))
+                bars_colors.append('gray')
+                ax_lines.plot(steps_b, means_b, linestyle='--', linewidth=2, label='Default loss', color='black', alpha=0.5)
 
-            # Plot every run of this dispersion.
             for idx in run_indices:
-                curr_steps = results_dict['metrics'][idx]['step']
-                curr_means = results_dict['metrics'][idx][metric_name]['mean']
-                curr_stds = results_dict['metrics'][idx][metric_name]['std']
-                curr_steps, curr_means, curr_stds = sort_by_step(curr_steps, curr_means, curr_stds)
-                curr_best, _ = best_over_history(curr_means, curr_stds, metric_name)
-                curr_label = run_label(results_dict['dispersion'][idx],
-                                       results_dict['dispersion_coeff'][idx],
-                                       results_dict['dispersion_loc'][idx])
+                steps_r = sorted_cache[(idx, '__steps__')]
+                _, means_r, _ = sorted_cache[(idx, metric_name)]
+                j = best_idx_per_run[idx]
                 coeff_logscaled = (np.log10(float(results_dict['dispersion_coeff'][idx])) + 4) / 7
-                ax_lines.plot(curr_steps, curr_means, linewidth=2, label=curr_label, color=cmap(coeff_logscaled))
-                # ax.fill_between(xs, means - stds, means + stds, linewidth=2, color=cmap(coeff_logscaled), alpha=0.2)
-
-                bars_labels.append(curr_label)
-                bars_heights.append(curr_best)
-                bars_colors.append(cmap(coeff_logscaled))
+                ax_lines.plot(steps_r, means_r, linewidth=2,
+                              label=run_label(results_dict['dispersion'][idx],
+                                              results_dict['dispersion_coeff'][idx],
+                                              results_dict['dispersion_loc'][idx]),
+                              color=cmap(coeff_logscaled))
+                if means_r.size > 0 and j is not None and j < means_r.size:
+                    bars_labels.append(run_label(results_dict['dispersion'][idx],
+                                                 results_dict['dispersion_coeff'][idx],
+                                                 results_dict['dispersion_loc'][idx]))
+                    bars_heights.append(float(means_r[j]))
+                    bars_colors.append(cmap(coeff_logscaled))
 
             ax_lines.set_xlabel("Step", fontsize=12)
             ax_lines.set_ylabel(metric_name, fontsize=12)
 
             bars = ax_bars.bar(np.arange(len(bars_labels)), bars_heights, color=bars_colors, alpha=0.8, label=bars_labels)
-            ax_bars.axhline(y=bars_heights[1], linestyle='--', linewidth=2, color=bars_colors[1], alpha=0.8)
+            if len(bars_heights) >= 2:
+                ax_bars.axhline(y=bars_heights[1], linestyle='--', linewidth=2, color=bars_colors[1], alpha=0.8)
             ax_bars.set_xticks(np.arange(len(bars_labels)))
             ax_bars.set_xticklabels([extract_coeff_from_label(label) for label in bars_labels], rotation=0, ha='center', fontsize=9)
             ax_bars.set_ylabel(metric_name, fontsize=12)
             ax_bars.set_xlabel('Dispersion Coefficient', fontsize=12)
             ax_bars.set_ylim(metric_ylim_bars[metric_name])
 
-            # Annotate the values.
             ax_bars.bar_label(
                 bars,
                 labels=[f"{v:.3f}" for v in bars_heights],
@@ -369,7 +406,6 @@ if __name__ == '__main__':
 
             if metric_idx == 0:
                 ax_lines.legend(fontsize=10, frameon=False, loc='upper right')
-                # For the barplots, remove the perplexity plot, but put the legend back.
                 legend_bars = ax_bars.legend(fontsize=12, frameon=False, loc='center left')
                 ax_bars.cla()
                 ax_bars.axis("off")
@@ -391,4 +427,6 @@ if __name__ == '__main__':
         model_name=args.model_name,
         lora_suffix=lora_suffix,
         decimals=1,
+        best_idx_per_run=best_idx_per_run,
+        sorted_cache=sorted_cache,
     )

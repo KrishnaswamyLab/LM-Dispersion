@@ -71,10 +71,10 @@ def group_texts(examples, block_size):
 def compute_precision_flags():
     if not torch.cuda.is_available():
         return False, False
-    major = torch.cuda.get_device_capability(0)[0]
-    fp16 = major < 8
-    bf16 = major >= 8
-    return fp16, bf16
+    if torch.cuda.is_bf16_supported():
+        return False, True
+    else:
+        return True, False
 
 def make_splits(dataset_name, dataset_config, hf_token, tokenizer, block_size, seed):
     ds = load_dataset(dataset_name, dataset_config, streaming=False, token=hf_token)
@@ -429,12 +429,15 @@ def main(args):
     log_every_n_steps = max_steps // args.num_ckpt + 1
 
     fp16, bf16 = compute_precision_flags()
+    # args.lr is set assuming world size is 1.
+    learning_rate = args.lr * math.sqrt(world_size)
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.per_device_train_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
-        learning_rate=args.lr,
+        learning_rate=learning_rate,
+        weight_decay=0.1,
         optim_args="beta1=0.9,beta2=0.95",
         max_grad_norm=1.0,
         warmup_ratio=0.1,
@@ -490,6 +493,7 @@ def main(args):
     ]
     fewshot_tasks = [
         "arc_challenge",
+        "arc_easy",
         "gsm8k",
         "mmlu",
         "medmcqa",
@@ -515,12 +519,12 @@ if __name__ == "__main__":
     ap.add_argument("--block_size", type=int, default=1024, help="Context length.")
     ap.add_argument("--dataset_name", type=str, default="Salesforce/wikitext",
                     help="Hugging Face dataset id.")
-    ap.add_argument("--dataset_config", type=str,
-                    default=os.environ.get("DATASET_CONFIG", "wikitext-103-raw-v1"),
+    ap.add_argument("--dataset_config", type=str, default="wikitext-103-raw-v1",
                     help="Dataset config (e.g., wikitext-2-raw-v1).")
     ap.add_argument("--hf_token", type=str, default=None,
                     help="HF token if needed for gated/private datasets.")
-    ap.add_argument("--lr", type=float, default=5e-5, help="Learning rate.")
+    ap.add_argument("--lr", type=float, default=5e-5,
+                    help="Learning rate. Please set this assuming number of GPU is 1. We will scale accordingly.")
     ap.add_argument("--train_tokens", type=int, required=True,
                     help="Total number of tokens to train on (token budget).")
     ap.add_argument("--dispersion", type=str, default=None, help="Dispersion loss.")
@@ -534,7 +538,7 @@ if __name__ == "__main__":
     ap.add_argument("--no_save_model", action="store_true")
     ap.add_argument("--num_workers", type=int, default=8, help="Number of dataloader workers.")
     ap.add_argument("--per_device_train_batch_size", type=int, default=16)
-    ap.add_argument("--gradient_accumulation_steps", type=int, default=8)
+    ap.add_argument("--gradient_accumulation_steps", type=int, default=16)
     ap.add_argument("--seed", type=int, default=1)
 
     args = ap.parse_args()
