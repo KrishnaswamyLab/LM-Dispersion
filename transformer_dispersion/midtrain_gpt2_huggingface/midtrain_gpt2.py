@@ -77,7 +77,10 @@ def compute_precision_flags():
         return True, False
 
 def make_splits(dataset_name, dataset_config, hf_token, tokenizer, block_size, seed):
-    ds = load_dataset(dataset_name, dataset_config, streaming=False, token=hf_token)
+    if dataset_config is None or str(dataset_config).strip() == "":
+        ds = load_dataset(dataset_name, streaming=False, token=hf_token)
+    else:
+        ds = load_dataset(dataset_name, dataset_config, streaming=False, token=hf_token)
 
     if "train" in ds:
         ds_train = ds["train"]
