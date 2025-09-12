@@ -71,13 +71,16 @@ def group_texts(examples, block_size):
 def compute_precision_flags():
     if not torch.cuda.is_available():
         return False, False
-    major = torch.cuda.get_device_capability(0)[0]
-    fp16 = major < 8
-    bf16 = major >= 8
-    return fp16, bf16
+    if torch.cuda.is_bf16_supported():
+        return False, True
+    else:
+        return True, False
 
 def make_splits(dataset_name, dataset_config, hf_token, tokenizer, block_size, seed):
-    ds = load_dataset(dataset_name, dataset_config, streaming=False, token=hf_token)
+    if dataset_config is None or str(dataset_config).strip() == "":
+        ds = load_dataset(dataset_name, streaming=False, token=hf_token, cache_dir=args.cache_dir)
+    else:
+        ds = load_dataset(dataset_name, dataset_config, streaming=False, token=hf_token, cache_dir=args.cache_dir)
 
     if "train" in ds:
         ds_train = ds["train"]
@@ -375,14 +378,14 @@ def main(args):
     if args.hf_token:
         os.environ["HF_TOKEN"] = args.hf_token
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name, use_auth_token=args.hf_token)
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name, use_auth_token=args.hf_token, cache_dir=args.cache_dir)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    config = AutoConfig.from_pretrained(args.model_name, use_auth_token=args.hf_token)
+    config = AutoConfig.from_pretrained(args.model_name, use_auth_token=args.hf_token, cache_dir=args.cache_dir)
     if hasattr(config, "loss_type"):
         delattr(config, "loss_type")
-    model = AutoModelForCausalLM.from_pretrained(args.model_name, config=config, use_auth_token=args.hf_token)
+    model = AutoModelForCausalLM.from_pretrained(args.model_name, config=config, use_auth_token=args.hf_token, cache_dir=args.cache_dir)
 
     max_ctx = getattr(model.config, "n_positions",
               getattr(model.config, "max_position_embeddings",
@@ -429,20 +432,21 @@ def main(args):
     log_every_n_steps = max_steps // args.num_ckpt + 1
 
     fp16, bf16 = compute_precision_flags()
+    # args.lr is set assuming world size is 1.
+    learning_rate = args.lr * math.sqrt(world_size)
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.per_device_train_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
-        learning_rate=args.lr,
-        weight_decay = 1e-4,
+        learning_rate=learning_rate,
+        weight_decay=0.1,
         optim_args="beta1=0.9,beta2=0.95",
         max_grad_norm=1.0,
         warmup_ratio=0.1,
         max_steps=max_steps,
         optim="adamw_torch",
         lr_scheduler_type="cosine",
-        lr_scheduler_kwargs={"num_cycles": 0.5},
         log_level="info",
         logging_steps=max(1, max_steps // 20),
         log_on_each_node=False,
@@ -492,6 +496,7 @@ def main(args):
     ]
     fewshot_tasks = [
         "arc_challenge",
+        "arc_easy",
         "gsm8k",
         "mmlu",
         "medmcqa",
@@ -514,15 +519,16 @@ if __name__ == "__main__":
     ap.add_argument("--model_name", type=str, default="gpt2",
                     help="Hugging Face model id to start from (pretrained).")
     ap.add_argument("--lora", action="store_true", help="Use LoRA (Low-Rank Adaptation) instead of full fine-tuning")
+    ap.add_argument("--cache_dir", type=str, default='./.cache/')
     ap.add_argument("--block_size", type=int, default=1024, help="Context length.")
     ap.add_argument("--dataset_name", type=str, default="Salesforce/wikitext",
                     help="Hugging Face dataset id.")
-    ap.add_argument("--dataset_config", type=str,
-                    default=os.environ.get("DATASET_CONFIG", "wikitext-103-raw-v1"),
+    ap.add_argument("--dataset_config", type=str, default="wikitext-103-raw-v1",
                     help="Dataset config (e.g., wikitext-2-raw-v1).")
     ap.add_argument("--hf_token", type=str, default=None,
                     help="HF token if needed for gated/private datasets.")
-    ap.add_argument("--lr", type=float, default=5e-5, help="Learning rate.")
+    ap.add_argument("--lr", type=float, default=5e-5,
+                    help="Learning rate. Please set this assuming number of GPU is 1. We will scale accordingly.")
     ap.add_argument("--train_tokens", type=int, required=True,
                     help="Total number of tokens to train on (token budget).")
     ap.add_argument("--dispersion", type=str, default=None, help="Dispersion loss.")
