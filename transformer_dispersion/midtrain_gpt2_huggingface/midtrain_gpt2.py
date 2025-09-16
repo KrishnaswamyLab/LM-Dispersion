@@ -520,6 +520,7 @@ def main(args):
                                         num_fewshot=args.num_fewshot,
                                         max_eval_samples=args.max_eval_samples,
                                         every_n_steps=log_every_n_steps,
+                                        eval_at_end=args.train_tokens > 0,
                                         save_on_eval=not args.no_save_model))
 
     trainer.train()
