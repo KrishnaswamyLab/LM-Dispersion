@@ -234,7 +234,7 @@ def render_latex_table(
                 baseline_value = baseline_reference_values[metric_name]
                 cell_text = f"{value:.{decimals}f}"
                 if np.isfinite(baseline_value):
-                    difference = value - baseline_value
+                    difference = np.round(value, decimals) - np.round(baseline_value, decimals)
                     sign = "+" if difference >= 0 else ""
                     color_name = "forestgreen" if difference >= 0 else "crimson"
                     cell_text += f"$_{{\\textcolor{{{color_name}}}{{({sign}{difference:.{decimals}f})}}}}$"
@@ -245,7 +245,7 @@ def render_latex_table(
                 baseline_value = baseline_reference_values[metric_name]
                 cell_text = f"{value:.{decimals}f}"
                 if np.isfinite(baseline_value):
-                    difference = value - baseline_value
+                    difference = np.round(value, decimals) - np.round(baseline_value, decimals)
                     sign = "+" if difference >= 0 else ""
                     color_name = "forestgreen" if difference >= 0 else "crimson"
                     cell_text += f"$_{{\\textcolor{{{color_name}}}{{({sign}{difference:.{decimals}f})}}}}$"
@@ -262,7 +262,7 @@ def render_latex_table(
             if row['src'] == ("baseline","initial") or not np.isfinite(average_baseline):
                 average_cell_text = f"{average_value:.{decimals}f}"
             else:
-                difference = average_value - average_baseline
+                difference = np.round(average_value, decimals) - np.round(average_baseline, decimals)
                 sign = "+" if difference >= 0 else ""
                 color_name = "forestgreen" if difference >= 0 else "crimson"
                 average_cell_text = f"{average_value:.{decimals}f}$_{{\\textcolor{{{color_name}}}{{({sign}{difference:.{decimals}f})}}}}$"
