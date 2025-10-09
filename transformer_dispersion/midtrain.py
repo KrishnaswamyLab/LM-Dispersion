@@ -48,6 +48,7 @@ def generate_output_dir(args):
         'train_tokens': args.train_tokens,
         'dispersion': args.dispersion,
         'dispersion_coeff': args.dispersion_coeff,
+        'dispersion_var_coeff': args.dispersion_var_coeff,
         'dispersion_loc': args.dispersion_loc,
         'tau_infonce_l2': args.tau_infonce_l2,
         'tau_infonce_cos': args.tau_infonce_cos,
@@ -72,6 +73,10 @@ def generate_output_dir(args):
     else:
         disp_str = args.dispersion
         coeff_str = f"-c{args.dispersion_coeff}".replace(".", "p")
+        
+        # Add variance coefficient if non-zero
+        if args.dispersion_var_coeff > 0:
+            coeff_str += f"-vc{args.dispersion_var_coeff}".replace(".", "p")
         
         # Only include tau values that are relevant
         tau_parts = []
@@ -313,13 +318,15 @@ class CustomLossTrainer(Trainer):
                  dispersion_loc: str,
                  tau_infonce_l2: float,
                  tau_infonce_cos: float,
+                 dispersion_var_coeff: float=0.,
                  **kwargs):
         super().__init__(*args, **kwargs)
         self.loss_fn = loss_fn
 
-        self.use_disp = dispersion is not None and dispersion_coeff > 0.0
+        self.use_disp = dispersion is not None and (dispersion_coeff > 0.0 or dispersion_var_coeff > 0.0)
         self.disp_coeff = dispersion_coeff
         self.disp_loc = dispersion_loc
+        self.disp_var_coeff = dispersion_var_coeff
 
         if self.use_disp:
             variant = dispersion.lower()
@@ -334,8 +341,10 @@ class CustomLossTrainer(Trainer):
 
         hidden_states: tuple of tensors, each [B, seq_len, feature_dim]
         '''
+        assert self.disp_coeff + self.disp_var_coeff > 0, "disp_coeff + disp_var_coeff must be greater than 0"
         if self.disp_loc == "last":
-            return self.disp_loss_fn(hidden_states[-1])
+            assert self.disp_var_coeff == 0, "disp_var_coeff must be 0 when disp_loc is last"
+            return self.disp_loss_fn(hidden_states[-1]) * self.disp_coeff
 
         # Average across transformer layers (skipping embedding layer)
         loss_values = []
@@ -345,7 +354,14 @@ class CustomLossTrainer(Trainer):
                 # skipping embedding layer
                 continue
             loss_values.append(self.disp_loss_fn(h))
-        return torch.stack(loss_values).mean()
+        # return torch.stack(loss_values).mean()
+        loss_values = torch.stack(loss_values)
+        loss_val = 0.
+        if self.disp_coeff > 0:
+            loss_val += self.disp_coeff * loss_values.mean()
+        if self.disp_var_coeff > 0:
+            loss_val += self.disp_var_coeff * loss_values.var()
+        return loss_val
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         labels = inputs["labels"]
@@ -360,7 +376,7 @@ class CustomLossTrainer(Trainer):
         # Add dispersion ONLY in training
         if want_disp:
             disp_loss = self.disperse_hidden_states(outputs.hidden_states)
-            total_loss = default_loss + self.disp_coeff * disp_loss
+            total_loss = default_loss + disp_loss
             outputs.dispersion_loss = disp_loss.detach()
         else:
             disp_loss = torch.zeros_like(default_loss)
@@ -473,6 +489,7 @@ def main(args):
         loss_fn=CausalLMLoss(),
         dispersion=args.dispersion,
         dispersion_coeff=args.dispersion_coeff,
+        dispersion_var_coeff=args.dispersion_var_coeff,
         dispersion_loc=args.dispersion_loc,
         tau_infonce_cos=args.tau_infonce_cos,
         tau_infonce_l2=args.tau_infonce_l2,
@@ -573,6 +590,7 @@ if __name__ == "__main__":
                     help="Total number of tokens to train on (token budget).")
     ap.add_argument("--dispersion", type=str, default=None, help="Dispersion loss.")
     ap.add_argument("--dispersion_coeff", type=float, default=1, help="Dispersion loss weight.")
+    ap.add_argument("--dispersion_var_coeff", type=float, default=0.0, help="Dispersion variance loss weight (applied to variance across layers).")
     ap.add_argument("--dispersion_loc", type=str, default='all', help="Dispersion loss location.")
     ap.add_argument("--tau_infonce_l2", type=float, default=0.5, help="Temperature.")
     ap.add_argument("--tau_infonce_cos", type=float, default=0.5, help="Temperature.")

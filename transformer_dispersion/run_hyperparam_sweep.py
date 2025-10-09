@@ -12,17 +12,20 @@ from pathlib import Path
 HYPERPARAMS = {
     'dispersion_types': [
         # ('none', None),
-        ('infonce_l2', 'infonce_l2'),
-        ('infonce_cosine', 'infonce_cosine'),
-        # ('hinge', 'hinge'),
-        # ('covariance', 'covariance'),
+        # ('infonce_l2', 'infonce_l2'),
+        # ('infonce_cosine', 'infonce_cosine'),
+        ('hinge', 'hinge'),
+        ('covariance', 'covariance'),
     ],
     # 'learning_rates': [5e-6, 1e-5, 5e-5],
     'learning_rates': [1e-5],
     # 'dispersion_coeffs': [0.1, 0.5, 1.0],
-    'dispersion_coeffs': [0.1, 1.0],
-    'tau_infonce_l2': [0.1, 0.5, 1.0],
-    'tau_infonce_cos': [0.1, 0.5, 1.0],
+    'dispersion_coeffs': [0.0, 0.1, 1.0],
+    'dispersion_var_coeffs': [0.0, 0.1, 1.0],
+    # 'tau_infonce_l2': [0.1, 0.5, 1.0],
+    # 'tau_infonce_cos': [0.1, 0.5, 1.0],
+    'tau_infonce_l2': [0.5],
+    'tau_infonce_cos': [0.5],
 }
 
 # Fixed parameters
@@ -48,20 +51,26 @@ def generate_combinations():
     combinations = []
 
     default_disp_coeff = HYPERPARAMS['dispersion_coeffs'][0]
+    default_disp_var_coeff = HYPERPARAMS['dispersion_var_coeffs'][0]
     default_tau_l2 = HYPERPARAMS['tau_infonce_l2'][0]
     default_tau_cos = HYPERPARAMS['tau_infonce_cos'][0]
     
-    for (disp_name, disp_type), lr, disp_coeff, tau_l2, tau_cos in itertools.product(
+    for (disp_name, disp_type), lr, disp_coeff, disp_var_coeff, tau_l2, tau_cos in itertools.product(
         HYPERPARAMS['dispersion_types'],
         HYPERPARAMS['learning_rates'],
         HYPERPARAMS['dispersion_coeffs'],
+        HYPERPARAMS['dispersion_var_coeffs'],
         HYPERPARAMS['tau_infonce_l2'],
         HYPERPARAMS['tau_infonce_cos']
     ):
+        # Skip runs with dispersion_var_coeff == 0.0 (already run)
+        if disp_var_coeff == 0.0:
+            continue
+        
         # Skip parameter combinations that don't apply to specific dispersion types
         if disp_type is None:
             # For baseline (no dispersion), skip non-default dispersion_coeff and tau values
-            if disp_coeff != default_disp_coeff or tau_l2 != default_tau_l2 or tau_cos != default_tau_cos:
+            if disp_coeff != default_disp_coeff or disp_var_coeff != default_disp_var_coeff or tau_l2 != default_tau_l2 or tau_cos != default_tau_cos:
                 continue
         elif disp_type == 'infonce_l2':
             # For infonce_l2, only vary tau_l2, keep tau_cos at default
@@ -82,6 +91,7 @@ def generate_combinations():
             'dispersion_type': disp_type,
             'learning_rate': lr,
             'dispersion_coeff': disp_coeff,
+            'dispersion_var_coeff': disp_var_coeff,
             'tau_infonce_l2': tau_l2,
             'tau_infonce_cos': tau_cos,
         }
@@ -94,19 +104,24 @@ def generate_run_name(combo):
     # Format learning rate to avoid periods
     lr_str = f"{combo['learning_rate']:.0e}".replace(".", "p").replace("-", "m")
     
+    # Add variance coefficient to name if non-zero
+    var_coeff_str = ""
+    if combo.get('dispersion_var_coeff', 0.0) > 0:
+        var_coeff_str = f"-vc{combo['dispersion_var_coeff']}".replace(".", "p")
+    
     if combo['dispersion_type'] is None:
         return f"baseline-lr{lr_str}"
     elif combo['dispersion_type'] == 'infonce_l2':
         tau_str = f"{combo['tau_infonce_l2']}".replace(".", "p")
         coeff_str = f"{combo['dispersion_coeff']}".replace(".", "p")
-        return f"infonce-l2-lr{lr_str}-c{coeff_str}-taul2-{tau_str}"
+        return f"infonce-l2-lr{lr_str}-c{coeff_str}{var_coeff_str}-taul2-{tau_str}"
     elif combo['dispersion_type'] == 'infonce_cosine':
         tau_str = f"{combo['tau_infonce_cos']}".replace(".", "p")
         coeff_str = f"{combo['dispersion_coeff']}".replace(".", "p")
-        return f"infonce-cos-lr{lr_str}-c{coeff_str}-taucos-{tau_str}"
+        return f"infonce-cos-lr{lr_str}-c{coeff_str}{var_coeff_str}-taucos-{tau_str}"
     else:
         coeff_str = f"{combo['dispersion_coeff']}".replace(".", "p")
-        return f"{combo['dispersion_name']}-lr{lr_str}-c{coeff_str}"
+        return f"{combo['dispersion_name']}-lr{lr_str}-c{coeff_str}{var_coeff_str}"
 
 def generate_command(combo):
     """Generate training command for a combination"""
@@ -137,6 +152,7 @@ def generate_command(combo):
         base_cmd.extend([
             f"--dispersion {combo['dispersion_type']}",
             f"--dispersion_coeff {combo['dispersion_coeff']}",
+            f"--dispersion_var_coeff {combo['dispersion_var_coeff']}",
             f"--dispersion_loc {FIXED_PARAMS['dispersion_loc']}",
         ])
     
@@ -249,6 +265,7 @@ def verify_uniqueness(combinations):
             'train_tokens': FIXED_PARAMS['train_tokens'],
             'dispersion': combo['dispersion_type'],
             'dispersion_coeff': combo['dispersion_coeff'],
+            'dispersion_var_coeff': combo['dispersion_var_coeff'],
             'dispersion_loc': FIXED_PARAMS['dispersion_loc'],
             'tau_infonce_l2': combo['tau_infonce_l2'],
             'tau_infonce_cos': combo['tau_infonce_cos'],
