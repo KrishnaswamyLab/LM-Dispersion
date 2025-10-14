@@ -62,7 +62,7 @@ class DispersionLoss(torch.nn.Module):
             non_diag = ~torch.eye(L, dtype=torch.bool, device=z.device)
             logit = -D.masked_select(non_diag) / self.tau_l2
             # Norm regularization to prevent blowing up L2 distance too much.
-            norm_regularization = (z ** 2).mean() * 1e-2
+            norm_regularization = (z ** 2).mean() * 1e-1
             # NOTE: log-sum-exp trick for `log(mean(exp(logit)))`, only differ by a constant: -log(logit.size(0))
             return torch.logsumexp(logit + self.epsilon, dim=0) / B + norm_regularization
 
