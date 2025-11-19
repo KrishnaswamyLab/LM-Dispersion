@@ -196,7 +196,7 @@ class LMEvalCallback(TrainerCallback):
                     num_fewshot=0,
                     device=device_str,
                     limit=self.max_eval_samples,
-                    gen_kwargs = {"max_gen_toks": self.max_gen_tokens},
+                    gen_kwargs = {"max_gen_toks": self.max_gen_tokens, "do_sample": False},
                     log_samples=False,  # Otherwise, will log individual samples in the JSON.
                     random_seed=args.seed,
                     numpy_random_seed=args.seed,
@@ -210,7 +210,7 @@ class LMEvalCallback(TrainerCallback):
                     num_fewshot=self.num_fewshot,
                     device=device_str,
                     limit=self.max_eval_samples,
-                    gen_kwargs = {"max_gen_toks": self.max_gen_tokens},
+                    gen_kwargs = {"max_gen_toks": self.max_gen_tokens, "do_sample": False},
                     log_samples=False,  # Otherwise, will log individual samples in the JSON.
                     random_seed=args.seed,
                     numpy_random_seed=args.seed,
@@ -481,14 +481,12 @@ def main(args):
     fewshot_tasks = [
         "arc_challenge",
         "arc_easy",
-        "bigbench",
         "drop",
         "gsm8k",
         "mathqa",
         "mmlu",
         "mmlu_pro",
         "medmcqa",
-        "triviaqa",
     ]
     trainer.add_callback(LMEvalCallback(tokenizer,
                                         zeroshot_tasks,
