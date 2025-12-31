@@ -380,10 +380,9 @@ def main(args):
         delattr(config, "loss_type")
     model = AutoModelForCausalLM.from_config(config)
 
-    max_gen_tokens = getattr(model.config, "task_specific_params")["text-generation"]["max_length"]
-    context_len = getattr(model.config, "n_positions",
-                          getattr(model.config, "max_position_embeddings",
-                                  getattr(model.config, "max_sequence_length", 1024)))
+    context_len = getattr(model.config, "max_position_embeddings")
+    max_gen_tokens = 1024
+    assert max_gen_tokens <= context_len
     tokenizer.model_max_length = context_len
 
     # vocab_size = len(tokenizer)
@@ -504,8 +503,8 @@ def main(args):
     log(f"Done. Saved to {args.output_dir}", filepath=args.log_path)
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="Pre-train GPT-2 with a token budget.")
-    ap.add_argument("--model_name", type=str, default="gpt2",
+    ap = argparse.ArgumentParser(description="Pre-train Qwen3 with a token budget.")
+    ap.add_argument("--model_name", type=str, default="qwen3",
                     help="Hugging Face model id to start from (pretrained).")
     ap.add_argument("--cache_dir", type=str, default='./.cache/')
     ap.add_argument("--dataset_name", type=str, default="HuggingFaceFW/fineweb",
