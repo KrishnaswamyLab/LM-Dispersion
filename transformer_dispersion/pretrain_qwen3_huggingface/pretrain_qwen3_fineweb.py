@@ -188,7 +188,7 @@ class LMEvalCallback(TrainerCallback):
                 torch.cuda.empty_cache()
                 gc.collect()
 
-                wrapped_model = HFLM(pretrained=save_model, tokenizer=self.tok, batch_size=8)
+                wrapped_model = HFLM(pretrained=save_model, tokenizer=self.tok, batch_size=1)
 
                 res_zeroshot = simple_evaluate(
                     model=wrapped_model,
