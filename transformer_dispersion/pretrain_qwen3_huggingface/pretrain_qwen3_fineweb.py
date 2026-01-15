@@ -499,7 +499,7 @@ def main(args):
         "gsm8k",
         "mathqa",
         "mmlu",
-        "mmlu_pro",
+        # "mmlu_pro",  # MMLU-Pro is too slow.
         "medmcqa",
     ]
     trainer.add_callback(LMEvalCallback(tokenizer,
