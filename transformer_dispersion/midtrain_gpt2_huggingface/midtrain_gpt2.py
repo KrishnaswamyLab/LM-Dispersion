@@ -385,7 +385,7 @@ def main(args):
     config = AutoConfig.from_pretrained(args.model_name, token=args.hf_token, cache_dir=args.cache_dir)
     if hasattr(config, "loss_type"):
         delattr(config, "loss_type")
-    model = AutoModelForCausalLM.from_config(config)
+    model = AutoModelForCausalLM.from_pretrained(args.model_name, config=config)
     model.gradient_checkpointing_enable()
 
     max_gen_tokens = getattr(model.config, "task_specific_params")["text-generation"]["max_length"]
