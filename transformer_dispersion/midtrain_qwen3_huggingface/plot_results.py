@@ -29,7 +29,9 @@ empty_metrics_dict = {
     'winogrande\nacc,none': {'mean': [], 'std': []},
     'arc_easy\nacc,none': {'mean': [], 'std': []},
     'arc_challenge\nacc,none': {'mean': [], 'std': []},
+    # 'drop\nf1,none': {'mean': [], 'std': []},
     # 'gsm8k\nexact_match,flexible-extract': {'mean': [], 'std': []},
+    # 'mathqa\nacc,none': {'mean': [], 'std': []},
     'medmcqa\nacc,none': {'mean': [], 'std': []},
     'mmlu\nacc,none': {'mean': [], 'std': []},
     # 'mmlu_pro\nexact_match,custom-extract': {'mean': [], 'std': []},
@@ -295,6 +297,9 @@ def main(args):
     os.makedirs(os.path.dirname(figure_lines_save_path), exist_ok=True)
     os.makedirs(os.path.dirname(figure_bars_save_path), exist_ok=True)
     run_folder_list = sorted(glob(os.path.join(result_folder, f'midtrain_{args.model_name}{lora_suffix}_{"-".join(args.dataset_name.split("/"))}_*')))
+
+    # Ignore the folder if the folder does not contain any `lm_eval_*.json` files.
+    run_folder_list = [run_folder for run_folder in run_folder_list if len(glob(os.path.join(run_folder, 'lm_eval_*.json'))) > 0]
 
     for run_folder in run_folder_list:
         dispersion_name = run_folder.split('disp-')[1].split('-')[0]
@@ -568,8 +573,9 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Mid-train Qwen3 with a token budget.")
-    parser.add_argument("--model_name", type=str, default="Qwen-Qwen3-0.6B")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen3-0.6B")
     parser.add_argument("--lora", action="store_true", help="Use LoRA (Low-Rank Adaptation) instead of full fine-tuning")
     parser.add_argument("--dataset_name", type=str, default="Salesforce/wikitext")
     args = parser.parse_args()
+    args.model_name = args.model_name.replace('/', '-')
     main(args)

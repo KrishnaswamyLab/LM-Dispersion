@@ -560,6 +560,6 @@ if __name__ == "__main__":
     args = ap.parse_args()
 
     lora_suffix = "_lora" if args.lora else ""
-    args.output_dir = f'./results/midtrain_{args.model_name}{lora_suffix}_{"-".join(args.dataset_name.split("/"))}_lr-{args.lr}_token-{args.train_tokens}_disp-{args.dispersion}-{args.dispersion_coeff}-{args.dispersion_loc}_fewshot-{args.num_fewshot}_maxsample-{args.max_eval_samples}_seed-{args.seed}'
+    args.output_dir = f'./results/midtrain_{args.model_name.replace('/', '-')}{lora_suffix}_{"-".join(args.dataset_name.split("/"))}_lr-{args.lr}_token-{args.train_tokens}_disp-{args.dispersion}-{args.dispersion_coeff}-{args.dispersion_loc}_fewshot-{args.num_fewshot}_maxsample-{args.max_eval_samples}_seed-{args.seed}'
     args.log_path = os.path.join(args.output_dir, 'log.txt')
     main(args)
