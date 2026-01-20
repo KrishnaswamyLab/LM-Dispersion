@@ -549,7 +549,7 @@ if __name__ == "__main__":
     ap.add_argument("--tau_l2", type=float, default=0.5, help="Temperature.")
     ap.add_argument("--tau_cos", type=float, default=0.5, help="Temperature.")
     ap.add_argument("--num_fewshot", type=int, default=5, help="Eval num_fewshot.")
-    ap.add_argument("--max_eval_samples", type=int, default=500, help="Eval max_eval_samples.")
+    ap.add_argument("--max_eval_samples", type=int, default=200, help="Eval max_eval_samples.")
     ap.add_argument("--num_ckpt", type=int, default=10, help="Number of checkpoints.")
     ap.add_argument("--no_save_model", action="store_true")
     ap.add_argument("--num_workers", type=int, default=8, help="Number of dataloader workers.")
