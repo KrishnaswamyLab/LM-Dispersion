@@ -450,7 +450,7 @@ def main(args):
         warmup_steps=0,
         max_steps=max_steps,
         optim="adamw_torch",
-        lr_scheduler_type="constant",
+        lr_scheduler_type="cosine",
         log_level="info",
         logging_steps=max(1, max_steps // 20),
         log_on_each_node=False,
@@ -553,8 +553,8 @@ if __name__ == "__main__":
     ap.add_argument("--num_ckpt", type=int, default=10, help="Number of checkpoints.")
     ap.add_argument("--no_save_model", action="store_true")
     ap.add_argument("--num_workers", type=int, default=8, help="Number of dataloader workers.")
-    ap.add_argument("--per_device_train_batch_size", type=int, default=2)
-    ap.add_argument("--gradient_accumulation_steps", type=int, default=32)
+    ap.add_argument("--per_device_train_batch_size", type=int, default=1)
+    ap.add_argument("--gradient_accumulation_steps", type=int, default=64)
     ap.add_argument("--seed", type=int, default=1)
 
     args = ap.parse_args()
