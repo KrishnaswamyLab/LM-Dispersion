@@ -445,13 +445,14 @@ def main(args):
         per_device_train_batch_size=args.per_device_train_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=learning_rate,
-        weight_decay=0.01,
-        adam_epsilon=1e-8,
-        max_grad_norm=1.0,
-        warmup_steps=0,
-        max_steps=max_steps,
         optim="adamw_torch",
         lr_scheduler_type="cosine",
+        max_steps=max_steps,
+        warmup_ratio=0.2,
+        weight_decay=0.1,
+        adam_beta1=0.9,
+        adam_beta2=0.95,
+        max_grad_norm=1.0,
         log_level="info",
         logging_steps=max(1, max_steps // 20),
         log_on_each_node=False,
@@ -551,11 +552,11 @@ if __name__ == "__main__":
     ap.add_argument("--tau_cos", type=float, default=0.5, help="Temperature.")
     ap.add_argument("--num_fewshot", type=int, default=1, help="Eval num_fewshot.")
     ap.add_argument("--max_eval_samples", type=int, default=500, help="Eval max_eval_samples.")
-    ap.add_argument("--num_ckpt", type=int, default=10, help="Number of checkpoints.")
+    ap.add_argument("--num_ckpt", type=int, default=5, help="Number of checkpoints.")
     ap.add_argument("--no_save_model", action="store_true")
     ap.add_argument("--num_workers", type=int, default=8, help="Number of dataloader workers.")
     ap.add_argument("--per_device_train_batch_size", type=int, default=16)
-    ap.add_argument("--gradient_accumulation_steps", type=int, default=32)
+    ap.add_argument("--gradient_accumulation_steps", type=int, default=8)
     ap.add_argument("--seed", type=int, default=1)
 
     args = ap.parse_args()
