@@ -391,8 +391,8 @@ def main(args):
     model.gradient_checkpointing_enable()
 
     max_position_embeddings = getattr(model.config, "max_position_embeddings")
-    context_len = 8192
-    max_gen_tokens = 2048
+    context_len = 4096
+    max_gen_tokens = 1024
     assert max_gen_tokens <= context_len and context_len <= max_position_embeddings
     tokenizer.model_max_length = context_len
 
@@ -444,13 +444,14 @@ def main(args):
         per_device_train_batch_size=args.per_device_train_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=learning_rate,
-        weight_decay=0.01,
-        adam_epsilon=1e-8,
-        max_grad_norm=1.0,
-        warmup_steps=0,
-        max_steps=max_steps,
         optim="adamw_torch",
         lr_scheduler_type="cosine",
+        max_steps=max_steps,
+        warmup_ratio=0.2,
+        weight_decay=0.1,
+        adam_beta1=0.9,
+        adam_beta2=0.95,
+        max_grad_norm=1.0,
         log_level="info",
         logging_steps=max(1, max_steps // 20),
         log_on_each_node=False,
@@ -550,17 +551,17 @@ if __name__ == "__main__":
     ap.add_argument("--tau_cos", type=float, default=0.5, help="Temperature.")
     ap.add_argument("--num_fewshot", type=int, default=5, help="Eval num_fewshot.")
     ap.add_argument("--max_eval_samples", type=int, default=200, help="Eval max_eval_samples.")
-    ap.add_argument("--num_ckpt", type=int, default=10, help="Number of checkpoints.")
+    ap.add_argument("--num_ckpt", type=int, default=5, help="Number of checkpoints.")
     ap.add_argument("--no_save_model", action="store_true")
     ap.add_argument("--num_workers", type=int, default=8, help="Number of dataloader workers.")
     ap.add_argument("--per_device_train_batch_size", type=int, default=1)
-    ap.add_argument("--gradient_accumulation_steps", type=int, default=64)
+    ap.add_argument("--gradient_accumulation_steps", type=int, default=32)
     ap.add_argument("--seed", type=int, default=1)
 
     args = ap.parse_args()
 
     lora_suffix = "_lora" if args.lora else ""
     model_str = args.model_name.replace('/', '-')
-    args.output_dir = f'./results/midtrain_{model_str}{lora_suffix}_{"-".join(args.dataset_name.split("/"))}_lr-{args.lr}_token-{args.train_tokens}_disp-{args.dispersion}-{args.dispersion_coeff}-{args.dispersion_loc}_fewshot-{args.num_fewshot}_maxsample-{args.max_eval_samples}_seed-{args.seed}'
+    args.output_dir = f'./results/midtrain_{model_str}{lora_suffix}_{"-".join(args.dataset_name.split("/"))}_lr-{args.lr}_token-{args.train_tokens}_disp-{args.dispersion}-{args.dispersion_coeff}-{args.dispersion_loc}-tau_cos-{args.tau_cos}-tau_l2-{args.tau_l2}_fewshot-{args.num_fewshot}_maxsample-{args.max_eval_samples}_seed-{args.seed}'
     args.log_path = os.path.join(args.output_dir, 'log.txt')
     main(args)
