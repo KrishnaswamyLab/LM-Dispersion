@@ -17,7 +17,7 @@ class DispersionLoss(torch.nn.Module):
       - \tau_l2, \tau_cos and margin are kept as internal constants for simplicity.
     '''
     def __init__(self,
-                 variant: Literal["decorrelation", "l2_repel", "angular_spread", "orthogonalization", "perplexity_entropy"],
+                 variant: Literal["decorrelation", "l2_repel", "angular_spread", "orthogonalization", "perplexity_entropy"] = "angular_spread",
                  tau_l2: float = 0.5,
                  tau_cos: float = 0.5,
                  margin: float = 0.5,  # NOTE: 0.5 angular cosine distance = orthogonal.
