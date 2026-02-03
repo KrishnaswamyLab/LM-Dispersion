@@ -66,8 +66,11 @@ class DispersionLoss(torch.nn.Module):
             # NOTE: The distance matrix matrix `D` has shape [B, L, L].
             z_norm = z / (torch.linalg.norm(z, dim=2, keepdim=True) + self.epsilon)
             cossim = z_norm @ rearrange(z_norm, 'b l f -> b f l')
-            cossim = torch.clamp(cossim, -1 + self.epsilon, 1 - self.epsilon)
-            D = torch.arccos(cossim) / torch.pi
+            # Clamp to avoid -inf gradient at the two extrema.
+            cossim_clamped = torch.clamp(cossim, -1 + self.epsilon, 1 - self.epsilon)
+            # Clamp gives 0 gradient beyond the boundary. We force same gradient as the boundary instead.
+            cossim_clamped = cossim + (cossim_clamped - cossim).detach()
+            D = torch.arccos(cossim_clamped) / torch.pi
             non_diag = ~torch.eye(L, dtype=torch.bool, device=z.device)
             logit = -D[:, non_diag] / self.tau_cos
             # NOTE: log-sum-exp trick for `log(mean(exp(logit)))`, only differ by a constant: -log(logit.size(1))
@@ -78,7 +81,10 @@ class DispersionLoss(torch.nn.Module):
             # NOTE: The distance matrix matrix `D` has shape [B, L, L].
             z_norm = z / (torch.linalg.norm(z, dim=2, keepdim=True) + self.epsilon)
             cossim = z_norm @ rearrange(z_norm, 'b l f -> b f l')
-            cossim = torch.clamp(cossim, -1 + self.epsilon, 1 - self.epsilon)
+            # Clamp to avoid -inf gradient at the two extrema.
+            cossim_clamped = torch.clamp(cossim, -1 + self.epsilon, 1 - self.epsilon)
+            # Clamp gives 0 gradient beyond the boundary. We force same gradient as the boundary instead.
+            cossim_clamped = cossim + (cossim_clamped - cossim).detach()
             D = torch.arccos(cossim) / torch.pi
             non_diag = ~torch.eye(L, dtype=torch.bool, device=z.device)
             diff = torch.clamp(self.margin - D, min=0.0)
