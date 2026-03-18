@@ -21,7 +21,8 @@ class DispersionLoss(torch.nn.Module):
                  tau_l2: float = 1.0,
                  tau_cos: float = 1.0,
                  margin: float = 0.5,  # NOTE: 0.5 angular cosine distance = orthogonal.
-                 epsilon: float = 1e-4):
+                 epsilon: float = 1e-2,
+                 max_tokens: int = 512):
         super().__init__()
         variant = variant.lower()
         assert variant in {"decorrelation", "l2_repel", "angular_spread", "orthogonalization", "perplexity_entropy"}
@@ -30,6 +31,7 @@ class DispersionLoss(torch.nn.Module):
         self.tau_cos = float(tau_cos)
         self.margin = float(margin)
         self.epsilon = float(epsilon)
+        self.max_tokens = max_tokens
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         '''
@@ -40,6 +42,11 @@ class DispersionLoss(torch.nn.Module):
             raise ValueError(f'DispersionLoss only supports 3D [B, L, F]; got {tuple(z.shape)}.')
 
         B, L, F = z.shape
+
+        if self.max_tokens > 0 and L > self.max_tokens:
+            idx = torch.randperm(L, device=z.device)[:self.max_tokens]
+            z = z[:, idx, :]
+            B, L, F = z.shape
 
         if F < 2:
             raise ValueError(f'DispersionLoss expects F >= 2 in [B, L, F]; got {F}.')
@@ -71,8 +78,11 @@ class DispersionLoss(torch.nn.Module):
             # Clamp gives 0 gradient beyond the boundary. We force same gradient as the boundary instead.
             cossim_clamped = cossim + (cossim_clamped - cossim).detach()
             D = torch.arccos(cossim_clamped) / torch.pi
-            non_diag = ~torch.eye(L, dtype=torch.bool, device=z.device)
-            logit = -D[:, non_diag] / self.tau_cos
+            logit = -D / self.tau_cos
+            # Set diagonal to -inf.
+            mask = torch.eye(L, dtype=torch.bool, device=z.device).unsqueeze(0)
+            logit = logit.masked_fill(mask, float('-inf'))
+            logit = logit.reshape(B, -1)
             # NOTE: log-sum-exp trick for `log(mean(exp(logit)))`, only differ by a constant: -log(logit.size(1))
             constant_diff = torch.log(torch.tensor(L * (L - 1)))
             return (torch.logsumexp(logit + self.epsilon, dim=1) - constant_diff).mean()
