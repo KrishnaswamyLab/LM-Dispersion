@@ -5,6 +5,7 @@ import sys
 import json
 import math
 import argparse
+import time
 import torch
 import torch.distributed as dist
 from lm_eval import simple_evaluate
@@ -525,7 +526,14 @@ def main(args):
                                         eval_at_end=args.train_tokens > 0,
                                         save_on_eval=not args.no_save_model))
 
+    train_t0 = time.perf_counter()
     trainer.train()
+    train_elapsed = time.perf_counter() - train_t0
+    if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+        log(
+            f"Training wall time: {train_elapsed:.2f}s ({train_elapsed / 60:.2f} min, {train_elapsed / 3600:.4f} h)",
+            filepath=args.log_path,
+        )
 
     log(f"Done. Saved to {args.output_dir}", filepath=args.log_path)
 
