@@ -36,11 +36,12 @@ def compute_cosine_similarities(embeddings: List[np.ndarray]) -> List[np.ndarray
 def build_hist_stack(cossim_matrix_by_layer: List[np.ndarray], step: int = 1, bins: int = 128):
     selected = [(i, data) for i, data in enumerate(cossim_matrix_by_layer) if i % step == 0]
     layer_indices, hist_data = [], []
+    denom = max(1, len(cossim_matrix_by_layer) - 1)
     for (layer_idx, cossim_matrix) in selected:
         cossim_arr = cossim_matrix.flatten()
         hist, _ = np.histogram(cossim_arr, bins=bins, density=True, range=(-1, 1))
         hist_data.append(hist)
-        layer_indices.append(layer_idx)
+        layer_indices.append(layer_idx / denom)
     return np.array(hist_data), layer_indices
 
 def parse_run_triplet(run_folder: str):
@@ -81,9 +82,9 @@ if __name__ == '__main__':
     os.makedirs(os.path.dirname(figure_save_prefix), exist_ok=True)
     run_folder_list = sorted(glob(os.path.join('./results', 'midtrain_gpt2_Salesforce-wikitext*')))
 
-    repetitions = 3
+    repetitions = 10
     max_length = 1024
-    ckpt_stride = 2
+    ckpt_stride = 1
     plt.rcParams['font.family'] = 'sans-serif'
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -104,7 +105,8 @@ if __name__ == '__main__':
 
     baseline_run = runs[baseline_idx]
     others = runs[:baseline_idx] + runs[baseline_idx+1:]
-    order_disp = ["decorrelation", "l2_repel", "angular_spread", "orthogonalization"]
+    # order_disp = ["decorrelation", "l2_repel", "angular_spread", "orthogonalization"]
+    order_disp = ["angular_spread"]
 
     for disp in order_disp:
         group = [r for r in others if r[1] == disp]
@@ -127,7 +129,7 @@ if __name__ == '__main__':
             if len(ckpts) > max_ckpts:
                 max_ckpts = len(ckpts)
 
-        fig = plt.figure(figsize=(6 * max_ckpts, 6 * len(runs_in_fig)))
+        fig = plt.figure(figsize=(9.5 * max_ckpts, 8 * len(runs_in_fig)))
         for row_idx, (run_folder, d, c, l) in enumerate(tqdm(runs_in_fig)):
             ckpts = ckpt_lists[row_idx]
             for col_idx in tqdm(range(max_ckpts)):
@@ -187,11 +189,20 @@ if __name__ == '__main__':
                         im = ax.imshow(hist_matrix.T, aspect="auto", origin="lower", cmap='Reds',
                            extent=[0, layer_indices[-1], -1, 1], vmin=0, vmax=10)
 
-                    ax.set_title(f'{run_label(d, c, l)}\nstep {step}', fontsize=24)
-                    ax.set_xlabel('Layer', fontsize=24)
-                    if col_idx == 0:
-                        ax.set_ylabel('Cosine Similarity', fontsize=24)
-                    ax.tick_params(axis='both', which='major', labelsize=24)
+                        ax.set_title(f'step {step}', pad=24,
+                                     fontfamily='monospace', fontname='cmtt10', fontsize=54)
+                        ax.set_xlabel('Layer Fraction', fontsize=54)
+                        ax.set_xticks([0, 0.2, 0.4, 0.6, 0.8, 1])
+                        ax.set_xticklabels([0, 0.2, 0.4, 0.6, 0.8, 1])
+                        ax.set_ylim([-0.25, 1])
+                        ax.set_yticks([-0.25, 0, 0.25, 0.5, 0.75, 1])
+                        ax.set_yticklabels([-0.25, 0, 0.25, 0.5, 0.75, 1])
+                        if col_idx == 0:
+                            ax.set_ylabel('Cosine Similarity', fontsize=54)
+                        ax.tick_params(axis='both', which='major', labelsize=36)
+                        cbar = fig.colorbar(im, ax=ax)
+                        cbar.ax.tick_params(axis='both', which='major', labelsize=36)
+                        cbar.ax.set_title('Probability\nDensity', fontsize=24, pad=20)
 
                     del model
                     if device == 'cuda':
