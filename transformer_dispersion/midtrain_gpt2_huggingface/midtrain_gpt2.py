@@ -327,22 +327,30 @@ class CustomLossTrainer(Trainer):
 
     def disperse_hidden_states(self, hidden_states: List[torch.Tensor]) -> torch.Tensor:
         '''
-        Computes dispersion for last layer or averages across all layers (excluding emb layer at index 0),
-        with embeddings rearranged to [num_samples, sequence_length].
-
+        Computes dispersion for last layer or averages across transformer layers (excluding emb at index 0).
         hidden_states: tuple of tensors, each [B, seq_len, feature_dim]
         '''
-        if self.disp_loc == "last":
+        loc = self.disp_loc.lower()
+        if loc == "last":
             return self.disp_loss_fn(hidden_states[-1])
 
-        # Average across transformer layers (skipping embedding layer)
-        loss_values = []
         assert len(hidden_states) > 1
-        for idx, h in enumerate(hidden_states):
-            if idx == 0:
-                # skipping embedding layer
-                continue
-            loss_values.append(self.disp_loss_fn(h))
+        # Transformer block outputs: indices 1 .. len-1 (skip embedding at 0)
+        tr_indices = list(range(1, len(hidden_states)))
+        n_tr = len(tr_indices)
+        mid = n_tr // 2
+
+        if loc == "early_half":
+            # First floor(n_tr/2) transformer layers; if only one layer, use it
+            sel = tr_indices[:mid] if mid > 0 else tr_indices[:1]
+        elif loc == "late_half":
+            # Remaining transformer layers; if only one layer, use it
+            sel = tr_indices[mid:] if mid < n_tr else tr_indices[-1:]
+        else:
+            # "all" and legacy defaults: every transformer layer
+            sel = tr_indices
+
+        loss_values = [self.disp_loss_fn(hidden_states[i]) for i in sel]
         return torch.stack(loss_values).mean()
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
@@ -573,7 +581,7 @@ if __name__ == "__main__":
                     help="Total number of tokens to train on (token budget).")
     ap.add_argument("--dispersion", type=str, default=None, help="Dispersion loss.")
     ap.add_argument("--dispersion_coeff", type=float, default=1, help="Dispersion loss weight.")
-    ap.add_argument("--dispersion_loc", type=str, default='all', help="Dispersion loss location.")
+    ap.add_argument("--dispersion_loc", type=str, default="all", choices=["all", "last", "early_half", "late_half"])
     ap.add_argument("--tau_l2", type=float, default=1.0, help="Temperature.")
     ap.add_argument("--tau_cos", type=float, default=1.0, help="Temperature.")
     ap.add_argument("--num_fewshot", type=int, default=1, help="Eval num_fewshot.")
