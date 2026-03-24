@@ -43,7 +43,7 @@ class DispersionLoss(torch.nn.Module):
 
         B, L, F = z.shape
 
-        if self.max_tokens > 0 and L > self.max_tokens:
+        if self.max_tokens is not None and self.max_tokens > 0 and L > self.max_tokens:
             idx = torch.randperm(L, device=z.device)[:self.max_tokens]
             z = z[:, idx, :]
             B, L, F = z.shape
