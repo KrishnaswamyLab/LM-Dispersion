@@ -15,6 +15,10 @@ class DispersionLoss(torch.nn.Module):
 
     Notes:
       - \tau_l2, \tau_cos and margin are kept as internal constants for simplicity.
+      - clamp_threshold (t): used only in angular_spread and orthogonalization. Pairwise cosine
+        similarities are clamped to [-1+t, 1-t] before arccos so |d arccos / dx| stays bounded
+        (larger t -> gentler slopes near perfect align/anti-align, more saturation outside the band).
+        Default t=0.1 corresponds to cos-sim in [-0.9, 0.9]; values around 0.1-0.2 are typical.
     '''
     def __init__(self,
                  variant: Literal["decorrelation", "l2_repel", "angular_spread", "orthogonalization", "perplexity_entropy"] = "angular_spread",
@@ -22,6 +26,7 @@ class DispersionLoss(torch.nn.Module):
                  tau_cos: float = 1.0,
                  margin: float = 0.5,  # NOTE: 0.5 angular cosine distance = orthogonal.
                  epsilon: float = 1e-2,
+                 clamp_threshold: float = 0.1,
                  max_tokens: int = 512):
         super().__init__()
         variant = variant.lower()
@@ -31,6 +36,7 @@ class DispersionLoss(torch.nn.Module):
         self.tau_cos = float(tau_cos)
         self.margin = float(margin)
         self.epsilon = float(epsilon)
+        self.clamp_threshold = float(clamp_threshold)
         self.max_tokens = max_tokens
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
@@ -73,8 +79,8 @@ class DispersionLoss(torch.nn.Module):
             # NOTE: The distance matrix matrix `D` has shape [B, L, L].
             z_norm = z / (torch.linalg.norm(z, dim=2, keepdim=True) + self.epsilon)
             cossim = z_norm @ rearrange(z_norm, 'b l f -> b f l')
-            # Clamp to avoid -inf gradient at the two extrema.
-            cossim_clamped = torch.clamp(cossim, -1 + self.epsilon, 1 - self.epsilon)
+            # Clamp to avoid -inf gradient at the two extrema. Also saturate the gradient at the boundary on purpose.
+            cossim_clamped = torch.clamp(cossim, -1 + self.clamp_threshold, 1 - self.clamp_threshold)
             # Clamp gives 0 gradient beyond the boundary. We force same gradient as the boundary instead.
             cossim_clamped = cossim + (cossim_clamped - cossim).detach()
             D = torch.arccos(cossim_clamped) / torch.pi
@@ -91,11 +97,11 @@ class DispersionLoss(torch.nn.Module):
             # NOTE: The distance matrix matrix `D` has shape [B, L, L].
             z_norm = z / (torch.linalg.norm(z, dim=2, keepdim=True) + self.epsilon)
             cossim = z_norm @ rearrange(z_norm, 'b l f -> b f l')
-            # Clamp to avoid -inf gradient at the two extrema.
-            cossim_clamped = torch.clamp(cossim, -1 + self.epsilon, 1 - self.epsilon)
+            # Clamp to avoid -inf gradient at the two extrema. Also saturate the gradient at the boundary on purpose.
+            cossim_clamped = torch.clamp(cossim, -1 + self.clamp_threshold, 1 - self.clamp_threshold)
             # Clamp gives 0 gradient beyond the boundary. We force same gradient as the boundary instead.
             cossim_clamped = cossim + (cossim_clamped - cossim).detach()
-            D = torch.arccos(cossim) / torch.pi
+            D = torch.arccos(cossim_clamped) / torch.pi
             non_diag = ~torch.eye(L, dtype=torch.bool, device=z.device)
             diff = torch.clamp(self.margin - D, min=0.0)
             return diff.pow(2)[:, non_diag].mean()
