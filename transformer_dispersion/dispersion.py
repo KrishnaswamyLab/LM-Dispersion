@@ -18,7 +18,6 @@ class DispersionLoss(torch.nn.Module):
       - clamp_threshold (t): used only in angular_spread and orthogonalization. Pairwise cosine
         similarities are clamped to [-1+t, 1-t] before arccos so |d arccos / dx| stays bounded
         (larger t -> gentler slopes near perfect align/anti-align, more saturation outside the band).
-        Default t=0.1 corresponds to cos-sim in [-0.9, 0.9]; values around 0.1-0.2 are typical.
     '''
     def __init__(self,
                  variant: Literal["decorrelation", "l2_repel", "angular_spread", "orthogonalization", "perplexity_entropy"] = "angular_spread",
@@ -26,7 +25,7 @@ class DispersionLoss(torch.nn.Module):
                  tau_cos: float = 1.0,
                  margin: float = 0.5,  # NOTE: 0.5 angular cosine distance = orthogonal.
                  epsilon: float = 1e-2,
-                 clamp_threshold: float = 0.1,
+                 clamp_threshold: float = 0.25,
                  max_tokens: int = 512):
         super().__init__()
         variant = variant.lower()
