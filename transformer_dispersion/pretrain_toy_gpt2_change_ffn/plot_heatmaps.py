@@ -73,22 +73,21 @@ def find_checkpoints(run_dir: str) -> list[tuple[int, str]]:
     return sorted(rows, key=lambda item: item[0])
 
 
+def sort_key(path: str) -> tuple:
+    basename = os.path.basename(path.rstrip(os.sep))
+    _, seed = parse_ninner_and_seed(basename)
+    checkpoints = find_checkpoints(path)
+    max_step = checkpoints[-1][0] if checkpoints else -1
+    is_not_ce_only = not dispersion_is_none_run(basename)
+    return (is_not_ce_only, -seed, -max_step, path)
+
 def pick_one_folder_per_ninner(run_paths: list[str]) -> dict[int, str]:
     paths_grouped: dict[int, list[str]] = {}
     for path in run_paths:
         basename = os.path.basename(path.rstrip(os.sep))
         n_inner, _ = parse_ninner_and_seed(basename)
         paths_grouped.setdefault(n_inner, []).append(path)
-
-    def sort_key(path: str) -> tuple:
-        basename = os.path.basename(path.rstrip(os.sep))
-        _, seed = parse_ninner_and_seed(basename)
-        checkpoints = find_checkpoints(path)
-        max_step = checkpoints[-1][0] if checkpoints else -1
-        is_not_ce_only = not dispersion_is_none_run(basename)
-        return (is_not_ce_only, -seed, -max_step, path)
-
-    return {f: sorted(paths, key=sort_key)[0] for f, paths in paths_grouped.items()}
+    return {f: sorted(paths, key=sort_key)[-1] for f, paths in paths_grouped.items()}
 
 
 def load_model(checkpoint_path: str, cache_dir: str, device: str):
@@ -121,7 +120,7 @@ def draw_heatmap(fig, axis, cossim_by_layer: list[np.ndarray], title: str) -> No
 
     colorbar = fig.colorbar(image, ax=axis)
     colorbar.ax.tick_params(axis="both", which="major", labelsize=26)
-    colorbar.ax.set_title("Probability\nDensity", fontsize=20, pad=12)
+    colorbar.ax.set_title("Probability\nDensity", fontsize=20, pad=24)
 
 
 def glob_pretrain_ffn_run_directories(results_dir: str, model_name: str, dataset_name: str | None) -> tuple[list[str], str]:
@@ -152,9 +151,9 @@ def main(args) -> None:
     if output_directory:
         os.makedirs(output_directory, exist_ok=True)
 
-    figure = plt.figure(figsize=(args.fig_width, args.fig_height_per_row * len(ninner_order)))
-    for row_index, n_inner in enumerate(tqdm(ninner_order, desc="n_inner")):
-        axis = figure.add_subplot(len(ninner_order), 1, row_index + 1)
+    figure = plt.figure(figsize=(args.fig_width * len(ninner_order), args.fig_height_per_row))
+    for col_index, n_inner in enumerate(tqdm(ninner_order, desc="n_inner")):
+        axis = figure.add_subplot(1, len(ninner_order), col_index + 1)
         run_folder = folder_by_ninner[n_inner]
         checkpoints = find_checkpoints(run_folder)
         training_step, checkpoint_path = checkpoints[-1]
@@ -187,12 +186,12 @@ def main(args) -> None:
 
             mean_per_layer = [stack.mean(axis=0) for stack in stacked_per_layer]
             draw_heatmap(figure, axis, mean_per_layer, title=f"$F={n_inner}$, step {training_step}")
+            figure.tight_layout(pad=2)
+            figure.savefig(args.output, dpi=300)
             del model
             if device == "cuda":
                 torch.cuda.empty_cache()
 
-    figure.tight_layout(pad=2)
-    figure.savefig(args.output, dpi=300)
     plt.close(figure)
     print(f"Saved {args.output}")
 

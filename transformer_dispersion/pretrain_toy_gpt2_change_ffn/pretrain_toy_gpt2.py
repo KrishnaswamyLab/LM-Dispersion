@@ -150,6 +150,104 @@ def make_splits(dataset_name, dataset_config, cache_dir, hf_token, tokenizer, co
     return lm_train, lm_val
 
 
+def save_pretrained_eval_checkpoint(
+    args,
+    state,
+    model,
+    tokenizer,
+    stage: str,
+    log_path,
+    msg_prefix: str = "[LMEval]",
+    sync_ddp: bool = True,
+):
+    """Same eval_ckpt_* path naming as LMEvalCallback.save_on_eval. If sync_ddp, wrap in barriers (for callbacks that only call this)."""
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    ddp = world_size > 1 and dist.is_available() and dist.is_initialized()
+    if sync_ddp and ddp:
+        dist.barrier()
+    try:
+        if local_rank == 0:
+            ckpt_dir = os.path.join(
+                args.output_dir,
+                f"eval_ckpt_{stage or 'interval'}_step{state.global_step}",
+            )
+            os.makedirs(ckpt_dir, exist_ok=True)
+            save_st = getattr(args, "save_safetensors", True)
+            if hasattr(model, "module"):
+                model.module.save_pretrained(ckpt_dir, save_safetensors=save_st)
+            else:
+                model.save_pretrained(ckpt_dir, save_safetensors=save_st)
+            tokenizer.save_pretrained(ckpt_dir)
+            log(f"{msg_prefix} Weights saved to {ckpt_dir}", filepath=log_path)
+    finally:
+        if sync_ddp and ddp:
+            dist.barrier()
+
+
+class ModelSaveCallback(TrainerCallback):
+    def __init__(
+        self,
+        tokenizer,
+        log_path,
+        every_n_steps=None,
+        save_at_begin=True,
+        save_at_end=True,
+    ):
+        self.tok = tokenizer
+        self.log_path = log_path
+        self.every_n_steps = every_n_steps
+        self.save_at_begin = save_at_begin
+        self.save_at_end = save_at_end
+        self.has_run_begin = False
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        if self.save_at_begin and not self.has_run_begin:
+            model = kwargs["model"]
+            save_pretrained_eval_checkpoint(
+                args,
+                state,
+                model,
+                self.tok,
+                "begin",
+                self.log_path,
+                msg_prefix="[skip_eval]",
+                sync_ddp=True,
+            )
+            self.has_run_begin = True
+
+    def on_step_end(self, args, state, control, **kwargs):
+        if self.every_n_steps is None:
+            return
+        if state.global_step == 0 or state.global_step % self.every_n_steps != 0:
+            return
+        model = kwargs["model"]
+        save_pretrained_eval_checkpoint(
+            args,
+            state,
+            model,
+            self.tok,
+            "interval",
+            self.log_path,
+            msg_prefix="[skip_eval]",
+            sync_ddp=True,
+        )
+
+    def on_train_end(self, args, state, control, **kwargs):
+        if self.save_at_end:
+            model = kwargs["model"]
+            save_pretrained_eval_checkpoint(
+                args,
+                state,
+                model,
+                self.tok,
+                "end",
+                self.log_path,
+                msg_prefix="[skip_eval]",
+                sync_ddp=True,
+            )
+
+
 class LMEvalCallback(TrainerCallback):
     def __init__(
         self,
@@ -267,18 +365,9 @@ class LMEvalCallback(TrainerCallback):
                                         log(f"[LMEval] {task}.{metric_name}: {value:.4f}", filepath=self.log_path)
 
                         if self.save_on_eval:
-                            ckpt_dir = os.path.join(
-                                args.output_dir, f"eval_ckpt_{stage or 'interval'}_step{state.global_step}"
+                            save_pretrained_eval_checkpoint(
+                                args, state, model, self.tok, stage, self.log_path, msg_prefix="[LMEval]", sync_ddp=False
                             )
-                            os.makedirs(ckpt_dir, exist_ok=True)
-                            if hasattr(model, "module"):
-                                model.module.save_pretrained(
-                                    ckpt_dir, save_safetensors=getattr(args, "save_safetensors", True)
-                                )
-                            else:
-                                model.save_pretrained(ckpt_dir, save_safetensors=getattr(args, "save_safetensors", True))
-                            self.tok.save_pretrained(ckpt_dir)
-                            log(f"[LMEval] Weights saved to {ckpt_dir}", filepath=self.log_path)
 
                     except Exception as e:
                         log(
@@ -423,11 +512,12 @@ def main(args):
     config.n_inner = int(args.ffn_intermediate)
     config.vocab_size = len(tokenizer)
 
+    skip_tag = "skipeval_" if args.skip_eval else ""
     args.output_dir = (
         f"./results/pretrain_toy_ffn_{args.model_name}_nlayers-{config.n_layer}_ninner-{config.n_inner}_"
         f'{"-".join(args.dataset_name.split("/"))}_lr-{args.lr}_token-{args.train_tokens}_'
         f"disp-{args.dispersion}-{args.dispersion_coeff}-{args.dispersion_loc}-tau_cos-{args.tau_cos}-tau_l2-{args.tau_l2}_"
-        f"fewshot-{args.num_fewshot}_maxsample-{args.max_eval_samples}_seed-{args.seed}"
+        f"fewshot-{args.num_fewshot}_maxsample-{args.max_eval_samples}_{skip_tag}seed-{args.seed}"
     )
     args.log_path = os.path.join(args.output_dir, "log.txt")
 
@@ -544,39 +634,57 @@ def main(args):
         "medmcqa",
     ]
 
-    lm_eval_callback = LMEvalCallback(
-        tokenizer,
-        zeroshot_tasks,
-        fewshot_tasks,
-        log_path=args.log_path,
-        max_gen_tokens=max_gen_tokens,
-        num_fewshot=args.num_fewshot,
-        max_eval_samples=args.max_eval_samples,
-        every_n_steps=log_every_n_steps if args.train_tokens > 0 else None,
-        eval_at_begin=args.eval_at_begin,
-        eval_at_end=args.train_tokens > 0,
-        save_on_eval=not args.no_save_model,
-    )
-    trainer.add_callback(lm_eval_callback)
+    lm_eval_callback = None
+    if not args.skip_eval:
+        lm_eval_callback = LMEvalCallback(
+            tokenizer,
+            zeroshot_tasks,
+            fewshot_tasks,
+            log_path=args.log_path,
+            max_gen_tokens=max_gen_tokens,
+            num_fewshot=args.num_fewshot,
+            max_eval_samples=args.max_eval_samples,
+            every_n_steps=log_every_n_steps if args.train_tokens > 0 else None,
+            eval_at_begin=args.eval_at_begin,
+            eval_at_end=args.train_tokens > 0,
+            save_on_eval=not args.no_save_model,
+        )
+        trainer.add_callback(lm_eval_callback)
+    else:
+        log(
+            "Skipping LMEvalCallback (--skip_eval); checkpoints at same steps as eval intervals.",
+            filepath=args.log_path,
+        )
+        if not args.no_save_model:
+            trainer.add_callback(
+                ModelSaveCallback(
+                    tokenizer,
+                    log_path=args.log_path,
+                    every_n_steps=log_every_n_steps if args.train_tokens > 0 else None,
+                    save_at_begin=True,
+                    save_at_end=args.train_tokens > 0,
+                )
+            )
 
     train_t0 = time.perf_counter()
     trainer.train()
     train_elapsed = time.perf_counter() - train_t0
     if int(os.environ.get("LOCAL_RANK", "0")) == 0:
-        eval_sec = lm_eval_callback.eval_wall_seconds
+        eval_sec = 0.0 if lm_eval_callback is None else lm_eval_callback.eval_wall_seconds
         train_wo_eval = max(0.0, train_elapsed - eval_sec)
         log(
             f"Training wall time: {train_elapsed:.2f}s ({train_elapsed / 60:.2f} min, {train_elapsed / 3600:.4f} h)",
             filepath=args.log_path,
         )
-        log(
-            f"LMEvalCallback wall time (rank 0 eval work): {eval_sec:.2f}s ({eval_sec / 60:.2f} min, {eval_sec / 3600:.4f} h)",
-            filepath=args.log_path,
-        )
-        log(
-            f"Training wall time minus LMEvalCallback: {train_wo_eval:.2f}s ({train_wo_eval / 60:.2f} min, {train_wo_eval / 3600:.4f} h)",
-            filepath=args.log_path,
-        )
+        if lm_eval_callback is not None:
+            log(
+                f"LMEvalCallback wall time (rank 0 eval work): {eval_sec:.2f}s ({eval_sec / 60:.2f} min, {eval_sec / 3600:.4f} h)",
+                filepath=args.log_path,
+            )
+            log(
+                f"Training wall time minus LMEvalCallback: {train_wo_eval:.2f}s ({train_wo_eval / 60:.2f} min, {train_wo_eval / 3600:.4f} h)",
+                filepath=args.log_path,
+            )
 
     log(f"Done. Saved to {args.output_dir}", filepath=args.log_path)
 
@@ -606,12 +714,13 @@ if __name__ == "__main__":
     ap.add_argument("--tau_cos", type=float, default=1.0, help="Dispersion tau (cos).")
     ap.add_argument("--num_fewshot", type=int, default=1, help="lm-eval few-shot k.")
     ap.add_argument("--max_eval_samples", type=int, default=500, help="lm-eval sample limit per task.")
-    ap.add_argument("--num_ckpt", type=int, default=5, help="Eval intervals = budget / num_ckpt.")
+    ap.add_argument("--num_ckpt", type=int, default=2, help="Eval intervals = budget / num_ckpt.")
     ap.add_argument("--no_save_model", action="store_true", help="Do not save ckpt on lm-eval.")
     ap.add_argument("--num_workers", type=int, default=8, help="Dataloader workers.")
     ap.add_argument("--per_device_train_batch_size", type=int, default=16, help="Per-device train batch size.")
     ap.add_argument("--gradient_accumulation_steps", type=int, default=8, help="Gradient accumulation steps.")
     ap.add_argument("--seed", type=int, default=1, help="RNG seed.")
     ap.add_argument("--eval_at_begin", action="store_true", help="lm-eval at step 0 (slow on random init).")
+    ap.add_argument("--skip_eval", action="store_true", help="Do not register LMEvalCallback.")
 
     main(ap.parse_args())

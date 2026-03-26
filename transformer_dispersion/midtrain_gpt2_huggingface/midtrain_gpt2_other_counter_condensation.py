@@ -301,7 +301,7 @@ if __name__ == "__main__":
     ap.add_argument(
         "--neftune_alpha",
         type=float,
-        default=5.0,
+        default=1.0,
         help="NEFTune noise_alpha if --noisy_embedding (bound = alpha/sqrt(S H) on token embeddings).",
     )
     ap.add_argument("--active_forget_every_k_steps", type=int, default=1000, help="Reinit period if --active_forgetting.")
