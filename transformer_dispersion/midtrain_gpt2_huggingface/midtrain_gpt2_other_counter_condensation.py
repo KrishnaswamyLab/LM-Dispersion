@@ -11,8 +11,9 @@ Active forgetting follows Chen et al. (2023) / https://github.com/facebookresear
       (real ``torch`` scheduler with ``get_last_lr`` / checkpoint state). Body LR matches HF cosine+warmup
       (``midtrain_gpt2.py``); embedding LR uses peak ``--af-emb-peak-lr`` * linear warmup/decay with fairseq
       ``lr_step_update`` index: ``speed = T // K``, ``emb_idx = (g * speed) % T`` (Chen et al. / language-model-plasticity).
-      Initial param LRs are step 0; after each optimizer step the scheduler advances (``s = last_epoch + 1`` matches
-      the training step index used for LR multipliers).
+      Optimizer param groups use **full** body / embedding peak LRs at creation (same convention as HF ``Trainer``);
+      ``ActiveForgettingLRScheduler`` matches HF cosine index for **body** (``last_epoch``); embedding plasticity uses
+      ``last_epoch + 1`` (completed steps when the new lr applies).
   (4) Same ``TrainingArguments`` as standard midtrain: ``lr_scheduler_type=cosine``, ``warmup_ratio=0.2``,
       ``max_grad_norm=1.0`` (global grad clip only, like ``midtrain_gpt2.py``).
 
@@ -180,21 +181,23 @@ class ActiveForgettingLRScheduler(_TorchLRSchedulerBase):
         super().__init__(optimizer, last_epoch)
 
     def get_lr(self):
-        # PyTorch increments last_epoch before get_lr; s matches the LR step index after each optimizer step.
-        s = self.last_epoch + 1
+        # Body: same step index as HF ``LambdaLR`` / ``get_cosine_schedule_with_warmup``. Embedding plasticity:
+        # ``last_epoch + 1`` = completed optimizer steps when this lr is applied on the next step.
+        le = self.last_epoch
         T = self.af_max_steps
         K = self.af_every_k
+        emb_g = le + 1
         out: List[float] = []
         for group in self.optimizer.param_groups:
             name = group.get("name", "")
             if name.startswith("embedding"):
-                ei = _plasticity_emb_schedule_step(s, T, K)
+                ei = _plasticity_emb_schedule_step(emb_g, T, K)
                 m = _linear_warmup_decay_mult(
                     min(ei, max(0, T - 1)), T, self.af_emb_warmup_ratio
                 )
                 out.append(self.af_emb_peak_lr * m)
             else:
-                m = _cosine_warmup_mult(s, T, self.af_body_warmup_ratio)
+                m = _cosine_warmup_mult(le, T, self.af_body_warmup_ratio)
                 out.append(self.af_body_base_lr * m)
         return out
 
@@ -320,13 +323,10 @@ class PerturbationTrainer(Trainer):
         optimizer_grouped_parameters = []
         bd, ed = pick_body(True), pick(True)
         bnd, end = pick_body(False), pick(False)
-        T = int(self.args.max_steps)
-        K = max(1, self.active_forget_every_k)
-        lr_body = self.af_body_base_lr * _cosine_warmup_mult(0, T, self.af_body_warmup_ratio)
-        ei0 = _plasticity_emb_schedule_step(0, T, K)
-        lr_emb = self.af_emb_peak_lr * _linear_warmup_decay_mult(
-            min(ei0, max(0, T - 1)), T, self.af_emb_warmup_ratio
-        )
+        # Match HF ``Trainer`` + cosine warmup: initial param group lr is full peak; scheduler updates after
+        # each step. mult(0)==0 as initial lr made the first optimizer step a no-op vs ``midtrain_gpt2.py``.
+        lr_body = self.af_body_base_lr
+        lr_emb = self.af_emb_peak_lr
         wd = self.args.weight_decay
         if bd:
             optimizer_grouped_parameters.append(
