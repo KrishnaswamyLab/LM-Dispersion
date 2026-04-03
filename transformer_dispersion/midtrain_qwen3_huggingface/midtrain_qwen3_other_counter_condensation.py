@@ -7,20 +7,16 @@ Active forgetting follows the protocol in
   "Improving Language Plasticity via Pretraining with Active Forgetting"
   (https://arxiv.org/pdf/2307.01163), as implemented in the official fairseq fork
   https://github.com/facebookresearch/language-model-plasticity (AdamEF + lr_emb):
-  (1) reset token embeddings to fresh Gaussian draws at episode boundaries (after the
-      optimizer step with gs ≡ K-1 (mod K), so the next forward/backward matches fresh Θ),
+  (1) reset token embeddings to fresh Gaussian draws when completed optimizer steps gs satisfy
+      gs > 0 and gs % K == 0, matching language-model-plasticity fairseq_cli/train.py
+      (num_updates % clear_embed_every_K_updates == 0 after train_step; HF global_step is that count),
   (2) zero Adam (exp_avg / exp_avg_sq / step) for those parameters together with the reset,
-  (3) embedding LR uses the same schedule *shape* as the body, but the schedule index follows
-      language-model-plasticity `fairseq/trainer.py` `lr_step_update` for `adamef`:
+  (3) **Body** LR stays **constant** at `--lr` (times sqrt(world_size)), matching typical mid-train. **Embedding** LR alone
+      follows warmup + linear decay (Fairseq `polynomial_decay` with `power=1` / HF polynomial `lr_end=0` shape),
+      with schedule **index** from language-model-plasticity `fairseq/trainer.py` `lr_step_update` for `adamef`:
       `speed = max_update // K`, `emb_num_updates = (body_num_updates * speed) % max_update`
-      (then `lr_scheduler.step_update(emb_num_updates)` there; we apply the equivalent multiplier here).
-      Official pretrain uses Fairseq `--lr-scheduler polynomial_decay` with default `power=1.0`
-      (`fb_sweep/sweep_iroberta_base_cc100_pretrain.py`, `fairseq/optim/lr_scheduler/polynomial_decay_schedule.py`),
-      i.e. linear warmup then linear decay to `end_learning_rate` — same multiplier shape as HuggingFace
-      `linear` or `polynomial` with `power=1.0`. Body index uses `global_step` (completed optimizer steps before
-      this step), matching `step_update(get_num_updates())` after each step.
-
-Requires transformers>=4.46 (TrainerCallback.on_pre_optimizer_step).
+      (`Trainer` uses `lr_scheduler_type=constant` so the global scheduler does not decay the body; the callback
+      sets per-group LRs each step).
 
 Mutually exclusive with dispersion loss; training objective is standard CE only.
 """
@@ -153,7 +149,7 @@ def _linear_warmup_decay_mult(current_step: int, num_training_steps: int, warmup
 def _plasticity_emb_schedule_step(body_num_updates: int, max_update: int, K: int) -> int:
     """Match language-model-plasticity fairseq `Trainer.lr_step_update` for adamef (embedding index).
 
-    See https://github.com/facebookresearch/language-model-plasticity — `language/fairseq/trainer.py`:
+    See https://github.com/facebookresearch/language-model-plasticity - `language/fairseq/trainer.py`:
     `speed = tot // K`, `emb_num_updates = (body_num_updates * speed) % tot`.
     """
     if max_update <= 0 or K <= 0:
@@ -165,9 +161,10 @@ def _plasticity_emb_schedule_step(body_num_updates: int, max_update: int, K: int
 class ActiveForgettingCallback(TrainerCallback):
     """Aligns with language-model-plasticity: AdamEF-style cleared moments + lr_emb indexing; HF-safe reset timing.
 
-    - Dual LR: body vs embedding indices as in fairseq `trainer.py` `lr_step_update` for `adamef`.
-    - Weight reinit + full Adam state clear on embedding tensors after steps with gs ≡ K-1 (mod K), so the
-      next minibatch's forward matches fresh Θ (grad/weight consistency; fairseq resets weights in-model).
+    - Body LR: constant `af_base_lr`. Embedding LR: same decay *shape* as plasticity polynomial p=1, index from
+      `lr_step_update` (`(g*speed)%tot`), not the global HF scheduler (which is constant for this run).
+    - Weight reinit + full Adam state clear on embedding tensors after steps with gs > 0 and gs % K == 0
+      (official plasticity train loop timing), so the next minibatch's forward uses fresh weights.
 
     References: https://github.com/facebookresearch/language-model-plasticity
     (`fairseq/optim/adam.py` AdamEF, `fairseq/trainer.py` lr_step_update).
@@ -196,7 +193,6 @@ class ActiveForgettingCallback(TrainerCallback):
         K = self.every_k
         tot = self.max_steps
 
-        body_mult = _linear_warmup_decay_mult(min(g, max(0, tot - 1)), tot, self.warmup_ratio)
         emb_sched_step = _plasticity_emb_schedule_step(g, tot, K)
         embed_mult = _linear_warmup_decay_mult(min(emb_sched_step, max(0, tot - 1)), tot, self.warmup_ratio)
 
@@ -205,16 +201,16 @@ class ActiveForgettingCallback(TrainerCallback):
             if name.startswith("embedding"):
                 group["lr"] = self.base_lr * embed_mult
             elif name.startswith("body"):
-                group["lr"] = self.base_lr * body_mult
+                group["lr"] = self.base_lr
         return control
 
     def on_step_end(self, args, state, control, **kwargs):
-        """After completing step gs where gs ≡ K-1 (mod K), reset before the next episode's forwards."""
+        """After completing step gs where gs > 0 and gs % K == 0 (num_updates % K == 0 in official code)."""
         if self.every_k <= 0:
             return control
         K = self.every_k
         gs = state.global_step
-        if gs <= 0 or (gs % K) != (K - 1):
+        if gs <= 0 or (gs % K) != 0:
             return control
         model = kwargs.get("model", self.trainer.model)
         opt = kwargs.get("optimizer", self.trainer.optimizer)
@@ -228,7 +224,7 @@ class ActiveForgettingCallback(TrainerCallback):
         if local_rank == 0:
             mt.log(
                 f"[active_forgetting] Reset embeddings + cleared Adam states after step {gs} "
-                f"(next step starts new K={K} episode; Chen et al. 2023 / language-model-plasticity)",
+                f"(gs % {K} == 0; Chen et al. 2023 / language-model-plasticity train.py timing)",
                 filepath=self.log_path,
             )
         return control
@@ -320,25 +316,6 @@ class PerturbationTrainer(Trainer):
         optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(self.args)
         self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
         return self.optimizer
-
-    def create_scheduler(self, num_training_steps: int, optimizer: torch.optim.Optimizer = None):
-        if not self.active_forgetting:
-            return super().create_scheduler(num_training_steps, optimizer)
-        from transformers.optimization import get_scheduler
-
-        optimizer = self.optimizer if optimizer is None else optimizer
-        if self.lr_scheduler is None:
-            num_warmup_steps = self.args.get_warmup_steps(num_training_steps)
-            # Match plasticity pretrain: polynomial_decay with power=1.0 (linear anneal); see sweep_iroberta_base_cc100_pretrain.py
-            self.lr_scheduler = get_scheduler(
-                name=self.args.lr_scheduler_type,
-                optimizer=optimizer,
-                num_warmup_steps=num_warmup_steps,
-                num_training_steps=num_training_steps,
-                scheduler_specific_kwargs=self.args.lr_scheduler_kwargs or {},
-            )
-            self._created_lr_scheduler = True
-        return self.lr_scheduler
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         labels = inputs["labels"]
@@ -444,9 +421,9 @@ def main(args):
     fp16, bf16 = mt.compute_precision_flags()
     learning_rate = args.lr * math.sqrt(world_size)
 
-    # Official forgetting pretrain: polynomial_decay, power=1 (linear decay phase); warmup_updates=10000 in paper/sweep.
-    sched_type = "polynomial" if args.active_forgetting else "cosine"
-    warmup_ratio = 0.2
+    # Active forgetting: constant LR for the run (body); embedding decay is applied only in ActiveForgettingCallback.
+    sched_type = "constant" if args.active_forgetting else "cosine"
+    warmup_ratio = 0.0 if args.active_forgetting else 0.2
 
     training_args_kw = dict(
         output_dir=args.output_dir,
@@ -472,9 +449,6 @@ def main(args):
         dataloader_num_workers=args.num_workers,
         remove_unused_columns=True,
     )
-    if args.active_forgetting:
-        # get_scheduler passes these to get_polynomial_decay_schedule_with_warmup (defaults would use lr_end=1e-7).
-        training_args_kw["lr_scheduler_kwargs"] = {"power": 1.0, "lr_end": 0.0}
     training_args = TrainingArguments(**training_args_kw)
 
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
@@ -510,8 +484,8 @@ def main(args):
         mt.log(
             f"Active forgetting (Chen et al. 2023; https://arxiv.org/pdf/2307.01163 ; "
             f"code https://github.com/facebookresearch/language-model-plasticity ): "
-            f"K={args.active_forget_every_k_steps}, dual LR (body step g; emb idx (g*floor(T/K))%T per fairseq), "
-            f"reset+Adam clear after gs≡K-1 (mod K).",
+            f"K={args.active_forget_every_k_steps}, body LR constant; emb LR warmup+linear decay with idx "
+            f"(g*floor(T/K))%T per fairseq lr_step_update; reset+Adam clear when gs>0 and gs%K==0.",
             filepath=args.log_path,
         )
     mt.log(f"Model: {args.model_name}", filepath=args.log_path)
