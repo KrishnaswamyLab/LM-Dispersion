@@ -320,7 +320,6 @@ def main(args) -> None:
     figure.savefig(args.output, dpi=300)
     plt.close(figure)
     print(f"Saved {args.output}")
-    import pdb; pdb.set_trace()
 
 
 if __name__ == "__main__":
@@ -331,7 +330,7 @@ if __name__ == "__main__":
     parser.add_argument("--any_dataset", action="store_true")
     parser.add_argument("--results_dir", default=None)
     parser.add_argument("--output", default=None)
-    parser.add_argument("--repetitions", type=int, default=10)
+    parser.add_argument("--repetitions", type=int, default=100)
     parser.add_argument("--max_length", type=int, default=1024)
     parser.add_argument("--cpu", action="store_true")
     args = parser.parse_args()
