@@ -1,5 +1,5 @@
 """
-Mid-train GPT-2 with anti-condensation baselines from the reviewer discussion:
+Mid-train Qwen3 with anti-condensation baselines from the reviewer discussion:
   --noisy_embedding: NEFTune-style noise on token embeddings each train forward.
   --active_forgetting: active forgetting on token embeddings (Chen et al., NeurIPS 2023).
 
@@ -39,7 +39,7 @@ except ImportError:
 import_dir = "/".join(os.path.realpath(__file__).split("/")[:-2])
 sys.path.insert(0, os.path.join(import_dir))
 
-import midtrain_gpt2 as mt
+import midtrain_qwen3 as mt
 
 
 def _unwrap_model(model):
@@ -541,14 +541,36 @@ def main(args):
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="Mid-train GPT-2: embedding noise or active forgetting baselines.")
-    ap.add_argument("--model_name", type=str, default="gpt2", help="HF model id.")
-    ap.add_argument("--cache_dir", type=str, default="./.cache/", help="HF cache dir.")
-    ap.add_argument("--dataset_name", type=str, default="Salesforce/wikitext", help="HF dataset id.")
-    ap.add_argument("--dataset_config", type=str, default="wikitext-103-raw-v1", help="Dataset config name.")
-    ap.add_argument("--hf_token", type=str, default=None, help="HF token if needed.")
-    ap.add_argument("--lr", type=float, default=5e-5, help="Base LR (scaled by sqrt(world_size)).")
-    ap.add_argument("--train_tokens", type=int, required=True, help="Total training token budget.")
+    ap = argparse.ArgumentParser(description="Mid-train Qwen3 with a token budget.")
+    ap.add_argument("--model_name", type=str, default="Qwen/Qwen3-0.6B",
+                    help="Hugging Face model id to start from (pretrained).")
+    ap.add_argument("--lora", action="store_true", help="Use LoRA (Low-Rank Adaptation) instead of full fine-tuning")
+    ap.add_argument("--cache_dir", type=str, default='./.cache/')
+    ap.add_argument("--dataset_name", type=str, default="Salesforce/wikitext",
+                    help="Hugging Face dataset id.")
+    ap.add_argument("--dataset_config", type=str, default="wikitext-103-raw-v1",
+                    help="Dataset config (e.g., wikitext-2-raw-v1).")
+    ap.add_argument("--hf_token", type=str, default=None,
+                    help="HF token if needed for gated/private datasets.")
+    ap.add_argument("--lr", type=float, default=5e-5,
+                    help="Learning rate. Please set this assuming number of GPU is 1. We will scale accordingly.")
+    ap.add_argument("--train_tokens", type=int, required=True,
+                    help="Total number of tokens to train on (token budget).")
+    ap.add_argument("--dispersion", type=str, default=None, help="Dispersion loss.")
+    ap.add_argument("--dispersion_coeff", type=float, default=1, help="Dispersion loss weight.")
+    ap.add_argument("--dispersion_loc", type=str, default='all', help="Dispersion loss location.")
+    ap.add_argument("--tau_l2", type=float, default=1.0, help="Temperature.")
+    ap.add_argument("--tau_cos", type=float, default=1.0, help="Temperature.")
+    ap.add_argument("--num_fewshot", type=int, default=5, help="Eval num_fewshot.")
+    ap.add_argument("--max_eval_samples", type=int, default=200, help="Eval max_eval_samples.")
+    ap.add_argument("--num_ckpt", type=int, default=5, help="Number of checkpoints.")
+    ap.add_argument("--no_save_model", action="store_true")
+    ap.add_argument("--num_workers", type=int, default=8, help="Number of dataloader workers.")
+    ap.add_argument("--per_device_train_batch_size", type=int, default=1)
+    ap.add_argument("--gradient_accumulation_steps", type=int, default=32)
+    ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--eval_at_begin", action="store_true", help="lm-eval at step 0 (slow on random init).")
+
     ap.add_argument(
         "--noisy_embedding",
         action="store_true",
@@ -558,19 +580,10 @@ if __name__ == "__main__":
     ap.add_argument(
         "--neftune_alpha",
         type=float,
-        default=1.0,
+        default=5.0,
         help="NEFTune noise_alpha if --noisy_embedding (bound = alpha/sqrt(S H) on token embeddings).",
     )
     ap.add_argument("--active_forget_every_k_steps", type=int, default=1000, help="K if --active_forgetting.")
-    ap.add_argument("--num_fewshot", type=int, default=1, help="lm-eval fewshot count.")
-    ap.add_argument("--max_eval_samples", type=int, default=500, help="lm-eval limit per task.")
-    ap.add_argument("--num_ckpt", type=int, default=5, help="Eval/save intervals from token budget.")
-    ap.add_argument("--no_save_model", action="store_true", help="Skip saving eval checkpoints.")
-    ap.add_argument("--num_workers", type=int, default=8, help="Dataloader workers.")
-    ap.add_argument("--per_device_train_batch_size", type=int, default=16, help="Train batch size per device.")
-    ap.add_argument("--gradient_accumulation_steps", type=int, default=8, help="Grad accumulation steps.")
-    ap.add_argument("--seed", type=int, default=1, help="RNG seed.")
-    ap.add_argument("--eval_at_begin", action="store_true", help="Run lm-eval at step 0.")
 
     args = ap.parse_args()
 
@@ -583,9 +596,12 @@ if __name__ == "__main__":
         mid = f"ccnoise-{args.neftune_alpha}"
     else:
         mid = f"ccforget-{args.active_forget_every_k_steps}"
+
+    model_str = args.model_name.replace('/', '-')
     args.output_dir = (
-        f"./results/midtrain_{args.model_name}_{ds}_lr-{args.lr}_token-{args.train_tokens}_"
+        f"./results/midtrain_{model_str}_{ds}_lr-{args.lr}_token-{args.train_tokens}_"
         f"{mid}_fewshot-{args.num_fewshot}_maxsample-{args.max_eval_samples}_seed-{args.seed}"
     )
+
     args.log_path = os.path.join(args.output_dir, "log.txt")
     main(args)
