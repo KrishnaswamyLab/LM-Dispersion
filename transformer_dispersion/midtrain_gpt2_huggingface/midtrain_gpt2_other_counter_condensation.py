@@ -1,7 +1,19 @@
 """
 Mid-train GPT-2 with anti-condensation baselines from the reviewer discussion:
   --noisy_embedding: NEFTune-style noise on token embeddings each train forward.
-  --active_forgetting: reinitialize token embeddings every K steps (Chen et al., NeurIPS 2023).
+  --active_forgetting: active forgetting on token embeddings (Chen et al., NeurIPS 2023).
+
+Active forgetting follows the protocol in
+  "Improving Language Plasticity via Pretraining with Active Forgetting"
+  (https://arxiv.org/pdf/2307.01163), as implemented in the official fairseq fork
+  https://github.com/facebookresearch/language-model-plasticity (AdamEF + lr_emb):
+  (1) reset token embeddings to fresh Gaussian draws at episode boundaries (after the
+      optimizer step with gs ≡ K-1 (mod K), so the next forward/backward matches fresh Θ),
+  (2) zero Adam (exp_avg / exp_avg_sq / step) for those parameters together with the reset,
+  (3) drive embedding LR with the same cosine+warmup *shape* as the body but with an
+      episode counter n_emb ≡ n (mod K), while the body uses the global step (Algorithm 1).
+
+Requires transformers>=4.46 (TrainerCallback.on_pre_optimizer_step).
 
 Mutually exclusive with dispersion loss; training objective is standard CE only.
 """
@@ -11,12 +23,18 @@ import math
 import os
 import sys
 import time
-from typing import Optional
+from typing import List, Optional, Sequence
 
 import torch
 import torch.distributed as dist
 from transformers import DataCollatorForLanguageModeling, Trainer, TrainerCallback, TrainingArguments
 from transformers import AutoTokenizer, AutoConfig, AutoModelForCausalLM
+from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
+
+try:
+    from transformers.pytorch_utils import get_parameter_names
+except ImportError:
+    from transformers.trainer_pt_utils import get_parameter_names
 
 import_dir = "/".join(os.path.realpath(__file__).split("/")[:-2])
 sys.path.insert(0, os.path.join(import_dir))
@@ -28,38 +46,160 @@ def _unwrap_model(model):
     return model.module if hasattr(model, "module") else model
 
 
-def _reinit_token_embeddings_synced(model, std: float):
-    """Chen et al.-style reset; identical weights on all DDP ranks via broadcast."""
+def _collect_embedding_trainable_params(model) -> List[torch.nn.Parameter]:
+    """Input token embeddings plus output head weights when untied (Chen et al. reset both in RoBERTa)."""
+    m = _unwrap_model(model)
+    out: List[torch.nn.Parameter] = []
+    seen = set()
+    for p in m.get_input_embeddings().parameters():
+        if p.requires_grad:
+            oid = id(p)
+            if oid not in seen:
+                seen.add(oid)
+                out.append(p)
+    olm = m.get_output_embeddings()
+    if olm is not None:
+        w = getattr(olm, "weight", None)
+        if w is not None and w.requires_grad and id(w) not in seen:
+            out.append(w)
+    return out
+
+
+def _reinit_token_embeddings_synced(model, std: float, pad_token_id: Optional[int]):
+    """Gaussian reinit (paper: N(0, 0.02)); zero pad row like manual_reset_emb / RoBERTa."""
     m = _unwrap_model(model)
     emb = m.get_input_embeddings()
     w = emb.weight.data
     if dist.is_available() and dist.is_initialized():
         if dist.get_rank() == 0:
             torch.nn.init.normal_(w, mean=0.0, std=std)
+            pidx = getattr(emb, "padding_idx", None)
+            if pidx is not None:
+                w[pidx].zero_()
+            elif pad_token_id is not None and 0 <= int(pad_token_id) < w.size(0):
+                w[int(pad_token_id)].zero_()
         dist.broadcast(w, src=0)
     else:
         torch.nn.init.normal_(w, mean=0.0, std=std)
+        pidx = getattr(emb, "padding_idx", None)
+        if pidx is not None:
+            w[pidx].zero_()
+        elif pad_token_id is not None and 0 <= int(pad_token_id) < w.size(0):
+            w[int(pad_token_id)].zero_()
+
+    olm = m.get_output_embeddings()
+    if olm is not None:
+        ow = getattr(olm, "weight", None)
+        if ow is not None and ow is not w:
+            if dist.is_available() and dist.is_initialized():
+                if dist.get_rank() == 0:
+                    torch.nn.init.normal_(ow.data, mean=0.0, std=std)
+                    if pad_token_id is not None and 0 <= int(pad_token_id) < ow.size(0):
+                        ow.data[int(pad_token_id)].zero_()
+                dist.broadcast(ow.data, src=0)
+            else:
+                torch.nn.init.normal_(ow.data, mean=0.0, std=std)
+                if pad_token_id is not None and 0 <= int(pad_token_id) < ow.size(0):
+                    ow.data[int(pad_token_id)].zero_()
+
+
+def _clear_adam_states_for_params(optimizer, params: Sequence[torch.nn.Parameter]) -> None:
+    """Match language-model-plasticity AdamEF: zero momentum / variance for reset embeddings."""
+    want = {id(p) for p in params}
+    for group in optimizer.param_groups:
+        for p in group["params"]:
+            if id(p) not in want:
+                continue
+            st = optimizer.state.get(p)
+            if not st:
+                continue
+            if "exp_avg" in st and st["exp_avg"] is not None:
+                st["exp_avg"].zero_()
+            if "exp_avg_sq" in st and st["exp_avg_sq"] is not None:
+                st["exp_avg_sq"].zero_()
+            if "step" in st:
+                s = st["step"]
+                if isinstance(s, torch.Tensor):
+                    s.zero_()
+                else:
+                    st["step"] = 0
+
+
+def _cosine_warmup_mult(current_step: int, num_training_steps: int, warmup_ratio: float) -> float:
+    """Same shape as transformers get_cosine_schedule_with_warmup (HF cosine, num_cycles=0.5)."""
+    if num_training_steps <= 0:
+        return 1.0
+    num_warmup_steps = int(num_training_steps * warmup_ratio)
+    if current_step < num_warmup_steps:
+        return float(current_step) / float(max(1, num_warmup_steps))
+    progress = float(current_step - num_warmup_steps) / float(max(1, num_training_steps - num_warmup_steps))
+    return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
 
 
 class ActiveForgettingCallback(TrainerCallback):
-    def __init__(self, every_k_steps: int, log_path: Optional[str]):
-        self.every_k_steps = every_k_steps
-        self.log_path = log_path
+    """Paper-style forgetting: dual LR before optimizer.step; reset after the (K-1)th step (on_step_end).
+
+    Gradients must match the weights they were taken w.r.t., so we cannot reinit in on_pre_optimizer_step.
+    After optimizer step when global_step % K == K - 1, we reinit embeddings and clear Adam state so the
+    *next* forward/backward uses fresh Θ with fresh moments (Algorithm 1 in Chen et al.).
+    """
+
+    def __init__(self, trainer: "PerturbationTrainer"):
+        self.trainer = trainer
+        self.every_k = trainer.active_forget_every_k
+        self.log_path = trainer.af_log_path
+        self.warmup_ratio = trainer.af_warmup_ratio
+        self.max_steps = trainer.args.max_steps
+        self.base_lr = trainer.af_base_lr
+        self.pad_token_id = trainer.af_pad_token_id
+
+    def on_pre_optimizer_step(self, args, state, control, **kwargs):
+        if self.every_k <= 0:
+            return control
+        model = kwargs.get("model", self.trainer.model)
+        if model is None or not model.training:
+            return control
+        opt = self.trainer.optimizer
+        if opt is None:
+            return control
+
+        g = state.global_step
+        upcoming = g + 1
+        K = self.every_k
+
+        body_mult = _cosine_warmup_mult(min(g, max(0, self.max_steps - 1)), self.max_steps, self.warmup_ratio)
+        t_emb = upcoming % K
+        embed_mult = _cosine_warmup_mult(t_emb, K, self.warmup_ratio)
+
+        for group in opt.param_groups:
+            name = group.get("name", "")
+            if name.startswith("embedding"):
+                group["lr"] = self.base_lr * embed_mult
+            elif name.startswith("body"):
+                group["lr"] = self.base_lr * body_mult
+        return control
 
     def on_step_end(self, args, state, control, **kwargs):
-        if self.every_k_steps <= 0:
+        """After completing step gs where gs ≡ K-1 (mod K), reset before the next episode's forwards."""
+        if self.every_k <= 0:
             return control
-        if state.global_step == 0 or state.global_step % self.every_k_steps != 0:
+        K = self.every_k
+        gs = state.global_step
+        if gs <= 0 or (gs % K) != (K - 1):
             return control
-        model = kwargs["model"]
-        if not model.training:
+        model = kwargs.get("model", self.trainer.model)
+        opt = kwargs.get("optimizer", self.trainer.optimizer)
+        if model is None or opt is None or not model.training:
             return control
         std = getattr(_unwrap_model(model).config, "initializer_range", 0.02)
-        _reinit_token_embeddings_synced(model, std=std)
+        _reinit_token_embeddings_synced(model, std=std, pad_token_id=self.pad_token_id)
+        emb_params = _collect_embedding_trainable_params(model)
+        _clear_adam_states_for_params(opt, emb_params)
         local_rank = int(os.environ.get("LOCAL_RANK", "0"))
         if local_rank == 0:
             mt.log(
-                f"[active_forgetting] Reinitialized token embeddings at step {state.global_step} (every_k={self.every_k_steps})",
+                f"[active_forgetting] Reset embeddings + cleared Adam states after step {gs} "
+                f"(next step starts new K={K} episode; Chen et al. 2023 / language-model-plasticity)",
                 filepath=self.log_path,
             )
         return control
@@ -68,11 +208,97 @@ class ActiveForgettingCallback(TrainerCallback):
 class PerturbationTrainer(Trainer):
     """CE only; optional NEFTune-style noise on input embeddings during training."""
 
-    def __init__(self, *args, neftune_alpha: float = 0.0, use_embed_noise: bool = False, **kwargs):
+    def __init__(
+        self,
+        *args,
+        neftune_alpha: float = 0.0,
+        use_embed_noise: bool = False,
+        active_forgetting: bool = False,
+        active_forget_every_k: int = 1000,
+        af_log_path: Optional[str] = None,
+        af_warmup_ratio: float = 0.2,
+        af_base_lr: float = 1e-4,
+        af_pad_token_id: Optional[int] = None,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.neftune_alpha = neftune_alpha
         self.use_embed_noise = use_embed_noise
         self.loss_fn = mt.CausalLMLoss()
+        self.active_forgetting = active_forgetting
+        self.active_forget_every_k = active_forget_every_k
+        self.af_log_path = af_log_path
+        self.af_warmup_ratio = af_warmup_ratio
+        self.af_base_lr = af_base_lr
+        self.af_pad_token_id = af_pad_token_id
+
+    def create_optimizer(self):
+        if not self.active_forgetting:
+            return super().create_optimizer()
+
+        opt_model = self.model
+        decay_parameters = get_parameter_names(opt_model, ALL_LAYERNORM_LAYERS)
+        decay_parameters = [n for n in decay_parameters if "bias" not in n]
+        emb_ids = {id(p) for p in _collect_embedding_trainable_params(opt_model)}
+
+        def pick(names_in_decay: bool):
+            rows = []
+            for n, p in opt_model.named_parameters():
+                if not p.requires_grad:
+                    continue
+                in_decay = n in decay_parameters
+                if in_decay != names_in_decay:
+                    continue
+                if id(p) in emb_ids:
+                    rows.append(p)
+            return rows
+
+        def pick_body(names_in_decay: bool):
+            rows = []
+            for n, p in opt_model.named_parameters():
+                if not p.requires_grad:
+                    continue
+                in_decay = n in decay_parameters
+                if in_decay != names_in_decay:
+                    continue
+                if id(p) in emb_ids:
+                    continue
+                rows.append(p)
+            return rows
+
+        optimizer_grouped_parameters = []
+        bd, ed = pick_body(True), pick(True)
+        bnd, end = pick_body(False), pick(False)
+        lr = self.args.learning_rate
+        wd = self.args.weight_decay
+        if bd:
+            optimizer_grouped_parameters.append(
+                {"params": bd, "weight_decay": wd, "lr": lr, "name": "body_decay"}
+            )
+        if bnd:
+            optimizer_grouped_parameters.append(
+                {"params": bnd, "weight_decay": 0.0, "lr": lr, "name": "body_nd"}
+            )
+        if ed:
+            optimizer_grouped_parameters.append(
+                {"params": ed, "weight_decay": wd, "lr": lr, "name": "embedding_decay"}
+            )
+        if end:
+            optimizer_grouped_parameters.append(
+                {"params": end, "weight_decay": 0.0, "lr": lr, "name": "embedding_nd"}
+            )
+
+        optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(self.args)
+        self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
+        return self.optimizer
+
+    def create_scheduler(self, num_training_steps: int, optimizer: torch.optim.Optimizer = None):
+        if not self.active_forgetting:
+            return super().create_scheduler(num_training_steps, optimizer)
+        from torch.optim.lr_scheduler import LambdaLR
+
+        optimizer = self.optimizer if optimizer is None else optimizer
+        return LambdaLR(optimizer, lr_lambda=lambda _: 1.0, last_epoch=-1)
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         labels = inputs["labels"]
@@ -115,9 +341,27 @@ class PerturbationTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
 
+def _require_transformers_for_active_forgetting():
+    import transformers
+
+    parts = transformers.__version__.split(".")
+    try:
+        major, minor = int(parts[0]), int(parts[1])
+    except ValueError:
+        return
+    if (major, minor) < (4, 46):
+        raise RuntimeError(
+            "active_forgetting needs transformers>=4.46 (TrainerCallback.on_pre_optimizer_step). "
+            f"Found transformers {transformers.__version__}."
+        )
+
+
 def main(args):
     if args.hf_token:
         os.environ["HF_TOKEN"] = args.hf_token
+
+    if args.active_forgetting:
+        _require_transformers_for_active_forgetting()
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, token=args.hf_token, cache_dir=args.cache_dir)
     tokenizer.padding_side = "right"
@@ -160,15 +404,18 @@ def main(args):
     fp16, bf16 = mt.compute_precision_flags()
     learning_rate = args.lr * math.sqrt(world_size)
 
+    sched_type = "constant" if args.active_forgetting else "cosine"
+    warmup_ratio = 0.0 if args.active_forgetting else 0.2
+
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.per_device_train_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=learning_rate,
         optim="adamw_torch",
-        lr_scheduler_type="cosine",
+        lr_scheduler_type=sched_type,
         max_steps=max_steps,
-        warmup_ratio=0.2,
+        warmup_ratio=warmup_ratio,
         weight_decay=0.1,
         adam_beta1=0.9,
         adam_beta2=0.95,
@@ -197,6 +444,12 @@ def main(args):
         data_collator=data_collator,
         neftune_alpha=args.neftune_alpha,
         use_embed_noise=use_noise,
+        active_forgetting=args.active_forgetting,
+        active_forget_every_k=args.active_forget_every_k_steps,
+        af_log_path=args.log_path,
+        af_warmup_ratio=0.2,
+        af_base_lr=learning_rate,
+        af_pad_token_id=int(tokenizer.pad_token_id) if tokenizer.pad_token_id is not None else None,
     )
 
     perturb_tag = "noise" if use_noise else "active_forget"
@@ -209,7 +462,13 @@ def main(args):
             filepath=args.log_path,
         )
     else:
-        mt.log(f"Active forgetting every {args.active_forget_every_k_steps} optimizer steps", filepath=args.log_path)
+        mt.log(
+            f"Active forgetting (Chen et al. 2023; https://arxiv.org/pdf/2307.01163 ; "
+            f"code https://github.com/facebookresearch/language-model-plasticity ): "
+            f"K={args.active_forget_every_k_steps}, dual LR (global vs n mod K), "
+            f"reset+Adam clear after steps gs≡K-1 (mod K) so the next forward uses fresh Θ.",
+            filepath=args.log_path,
+        )
     mt.log(f"Model: {args.model_name}", filepath=args.log_path)
     mt.log(str(model.config), filepath=args.log_path)
     mt.log(f"Dataset: {args.dataset_name} ({args.dataset_config})", filepath=args.log_path)
@@ -254,12 +513,7 @@ def main(args):
     trainer.add_callback(lm_eval_callback)
 
     if args.active_forgetting:
-        trainer.add_callback(
-            ActiveForgettingCallback(
-                every_k_steps=args.active_forget_every_k_steps,
-                log_path=args.log_path,
-            )
-        )
+        trainer.add_callback(ActiveForgettingCallback(trainer))
 
     train_t0 = time.perf_counter()
     trainer.train()
@@ -297,14 +551,14 @@ if __name__ == "__main__":
         action="store_true",
         help="NEFTune-style uniform noise on token embeddings during training (train only).",
     )
-    ap.add_argument("--active_forgetting", action="store_true", help="Reinit embeddings every K steps (Chen et al.).")
+    ap.add_argument("--active_forgetting", action="store_true", help="Active forgetting baseline (Chen et al. 2023).")
     ap.add_argument(
         "--neftune_alpha",
         type=float,
         default=1.0,
         help="NEFTune noise_alpha if --noisy_embedding (bound = alpha/sqrt(S H) on token embeddings).",
     )
-    ap.add_argument("--active_forget_every_k_steps", type=int, default=1000, help="Reinit period if --active_forgetting.")
+    ap.add_argument("--active_forget_every_k_steps", type=int, default=1000, help="K if --active_forgetting.")
     ap.add_argument("--num_fewshot", type=int, default=1, help="lm-eval fewshot count.")
     ap.add_argument("--max_eval_samples", type=int, default=500, help="lm-eval limit per task.")
     ap.add_argument("--num_ckpt", type=int, default=5, help="Eval/save intervals from token budget.")

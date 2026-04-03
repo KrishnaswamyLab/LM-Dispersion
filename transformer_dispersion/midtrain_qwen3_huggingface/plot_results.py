@@ -120,7 +120,7 @@ def load_folder_metrics(run_folder, template_metrics_dict):
     return metrics
 
 def aggregate_metrics_across_seeds(seed_metrics_list, template_metrics_dict):
-    """Mean / across-seed std (0 if a single seed) on the union of checkpoint steps."""
+    """Mean and across-seed std (0 if a single seed) on the union of checkpoint steps."""
     if not seed_metrics_list:
         return deepcopy(template_metrics_dict)
     all_steps = set()
@@ -172,52 +172,36 @@ def numeric_coefficient_value(value_text):
     except (TypeError, ValueError):
         return np.inf
 
-def compute_best_steps(results_storage, selection_metric_names):
-    best_step_index_per_run = {}
+def build_sorted_cache(results_storage):
+    """Aligned merged (across-seed mean/std) series per run, keyed like before."""
     sorted_cache = {}
-
-    for run_index in range(len(results_storage['metrics'])):
-        steps_array = np.asarray(results_storage['metrics'][run_index]['step'], dtype=int)
+    for run_index in range(len(results_storage["metrics"])):
+        steps_array = np.asarray(results_storage["metrics"][run_index]["step"], dtype=int)
         if steps_array.size == 0:
-            best_step_index_per_run[run_index] = None
+            sorted_cache[(run_index, "__steps__")] = np.array([], dtype=int)
+            for metric_key in results_storage["metrics"][run_index].keys():
+                if metric_key == "step":
+                    continue
+                sorted_cache[(run_index, metric_key)] = (
+                    np.array([], dtype=int),
+                    np.array([], dtype=float),
+                    np.array([], dtype=float),
+                )
             continue
 
         order = np.argsort(steps_array)
         steps_sorted = steps_array[order]
-        average_scores_over_metrics = np.full_like(steps_sorted, fill_value=np.nan, dtype=float)
-
-        per_metric_mean_values = {}
-        for metric_name in selection_metric_names:
-            means_array = np.asarray(results_storage['metrics'][run_index][metric_name]['mean'], dtype=float)
-            if means_array.size == 0:
+        sorted_cache[(run_index, "__steps__")] = steps_sorted
+        for metric_key in results_storage["metrics"][run_index].keys():
+            if metric_key == "step":
                 continue
-            per_metric_mean_values[metric_name] = means_array[order]
-
-        for time_index in range(len(steps_sorted)):
-            values_at_step = []
-            for metric_name in selection_metric_names:
-                if metric_name in per_metric_mean_values and np.isfinite(per_metric_mean_values[metric_name][time_index]):
-                    values_at_step.append(per_metric_mean_values[metric_name][time_index])
-            if len(values_at_step) > 0:
-                average_scores_over_metrics[time_index] = float(np.mean(values_at_step))
-
-        if np.all(~np.isfinite(average_scores_over_metrics)):
-            best_step_index_per_run[run_index] = None
-        else:
-            best_step_index_per_run[run_index] = int(np.nanargmax(average_scores_over_metrics))
-
-        sorted_cache[(run_index, '__steps__')] = steps_sorted
-        for metric_key in results_storage['metrics'][run_index].keys():
-            if metric_key == 'step':
-                continue
-            means_array = np.asarray(results_storage['metrics'][run_index][metric_key]['mean'], dtype=float)
-            stds_array = np.asarray(results_storage['metrics'][run_index][metric_key]['std'], dtype=float)
+            means_array = np.asarray(results_storage["metrics"][run_index][metric_key]["mean"], dtype=float)
+            stds_array = np.asarray(results_storage["metrics"][run_index][metric_key]["std"], dtype=float)
             if means_array.size == 0:
                 sorted_cache[(run_index, metric_key)] = (steps_sorted, means_array, stds_array)
             else:
                 sorted_cache[(run_index, metric_key)] = sort_series_by_step(steps_array, means_array, stds_array)
-
-    return best_step_index_per_run, sorted_cache
+    return sorted_cache
 
 def _raw_mean_std_at_merged_index(sorted_cache, run_index, metric_name, step_index, use_initial):
     """Aligned mean/std (fraction scale, not %) at merged-series index for one metric."""
@@ -235,20 +219,47 @@ def _raw_mean_std_at_merged_index(sorted_cache, run_index, metric_name, step_ind
     s = float(stds_sorted[index_to_use])
     return m, s
 
-def value_at_index_percentage(results_storage, sorted_cache, run_index, metric_name, step_index, use_initial=False):
-    _ = results_storage
+def value_at_index_percentage(sorted_cache, run_index, metric_name, step_index, use_initial=False):
     m, _ = _raw_mean_std_at_merged_index(sorted_cache, run_index, metric_name, step_index, use_initial)
     return np.nan if not np.isfinite(m) else (m * 100.0)
 
-def value_at_index_std_percentage(results_storage, sorted_cache, run_index, metric_name, step_index, use_initial=False):
-    """Across-seed std at the given step index, in percentage points (scale * 100)."""
-    _ = results_storage
+
+def value_at_index_std_percentage(sorted_cache, run_index, metric_name, step_index, use_initial=False):
+    """Across-seed std at the given merged-series index, in percentage points (x100)."""
     _, s = _raw_mean_std_at_merged_index(sorted_cache, run_index, metric_name, step_index, use_initial)
     if not np.isfinite(s):
         return 0.0
     return float(s * 100.0)
 
-def compute_metric_ylim_by_best_step(results_storage, all_metric_names, baseline_run_index, best_step_index_per_run, sorted_cache):
+
+def _mean_std_sample(values):
+    """Return (mean, sample std) in the same units as values; std is 0 if len < 2."""
+    if not values:
+        return np.nan, 0.0
+    return float(np.mean(values)), (0.0 if len(values) < 2 else float(np.std(values, ddof=1)))
+
+
+def _ylim_with_padding(ymin, ymax, default=(0.0, 1.0)):
+    """Expand [ymin, ymax] with epsilon for degenerate range, then 5% padding."""
+    if not np.isfinite(ymin):
+        ymin = default[0]
+    if not np.isfinite(ymax):
+        ymax = default[1]
+    if ymax == ymin:
+        eps = 1e-6 if ymin == 0 else 0.01 * abs(ymin)
+        ymin, ymax = ymin - eps, ymax + eps
+    pad = 0.05 * (ymax - ymin)
+    return ymin - pad, ymax + pad
+
+
+def compute_metric_ylim_by_per_seed_best(
+    results_storage,
+    all_metric_names,
+    baseline_run_index,
+    best_steps_per_run,
+    sorted_cache,
+):
+    """Y-limits from merged first checkpoint, then per-run mean and std across seeds at per-seed-best steps."""
     metric_ylim_ranges = {metric_name: [np.inf, -np.inf] for metric_name in all_metric_names}
     for metric_name in all_metric_names:
         candidate_values = []
@@ -260,42 +271,28 @@ def compute_metric_ylim_by_best_step(results_storage, all_metric_names, baseline
                 candidate_values.append(float(means_baseline[0] + stds_baseline[0]))
                 candidate_values.append(float(means_baseline[0] - stds_baseline[0]))
 
-        baseline_best_index = best_step_index_per_run[baseline_run_index]
-        if baseline_best_index is not None and means_baseline.size > baseline_best_index:
-            candidate_values.append(float(means_baseline[baseline_best_index]))
-            if stds_baseline.size > baseline_best_index and np.isfinite(stds_baseline[baseline_best_index]):
-                candidate_values.append(float(means_baseline[baseline_best_index] + stds_baseline[baseline_best_index]))
-                candidate_values.append(float(means_baseline[baseline_best_index] - stds_baseline[baseline_best_index]))
-
-        for run_index in range(len(results_storage['metrics'])):
-            if run_index == baseline_run_index:
-                continue
-            _, means_run, stds_run = sorted_cache[(run_index, metric_name)]
-            best_index = best_step_index_per_run[run_index]
-            if means_run.size > 0 and best_index is not None and best_index < means_run.size and np.isfinite(means_run[best_index]):
-                candidate_values.append(float(means_run[best_index]))
-                if stds_run.size > best_index and np.isfinite(stds_run[best_index]):
-                    candidate_values.append(float(means_run[best_index] + stds_run[best_index]))
-                    candidate_values.append(float(means_run[best_index] - stds_run[best_index]))
+        for run_index in range(len(results_storage["metrics"])):
+            m, s = mean_std_metric_at_per_seed_best(
+                results_storage["per_seed_metrics"][run_index],
+                metric_name,
+                best_steps_per_run[run_index],
+                as_percent=False,
+            )
+            if np.isfinite(m):
+                candidate_values.append(m)
+                if np.isfinite(s) and s > 0:
+                    candidate_values.append(m + s)
+                    candidate_values.append(m - s)
 
         if candidate_values:
-            min_value = float(np.nanmin(candidate_values))
-            max_value = float(np.nanmax(candidate_values))
-            metric_ylim_ranges[metric_name][0] = min_value
-            metric_ylim_ranges[metric_name][1] = max_value
+            metric_ylim_ranges[metric_name][0] = float(np.nanmin(candidate_values))
+            metric_ylim_ranges[metric_name][1] = float(np.nanmax(candidate_values))
 
     for metric_name, (ymin, ymax) in metric_ylim_ranges.items():
-        if not np.isfinite(ymin):
-            ymin = 0.0
-        if not np.isfinite(ymax):
-            ymax = 1.0
-        if ymax == ymin:
-            epsilon = 1e-6 if ymin == 0 else 0.01 * abs(ymin)
-            ymin, ymax = ymin - epsilon, ymax + epsilon
-        padding = 0.05 * (ymax - ymin)
-        metric_ylim_ranges[metric_name] = (ymin - padding, ymax + padding)
+        metric_ylim_ranges[metric_name] = _ylim_with_padding(ymin, ymax)
 
     return metric_ylim_ranges
+
 
 def _average_scalar_at_step_single_seed(seed_metrics_dict, step, metric_name_list):
     vals = []
@@ -311,6 +308,58 @@ def _average_scalar_at_step_single_seed(seed_metrics_dict, step, metric_name_lis
     if not vals:
         return np.nan
     return float(np.mean(vals))
+
+
+def best_training_step_per_seed(per_seed_metrics_for_run, selection_metric_names):
+    """
+    Per seed: average selection metrics at each checkpoint, then choose the training step
+    that maximizes that scalar (first max on ties). Returns a list parallel to per_seed_metrics_for_run.
+    """
+    best_steps = []
+    for seed_dict in per_seed_metrics_for_run:
+        steps = seed_dict.get("step") or []
+        if not steps:
+            best_steps.append(None)
+            continue
+        best_step, best_score = None, -np.inf
+        for step in steps:
+            v = _average_scalar_at_step_single_seed(seed_dict, step, selection_metric_names)
+            if np.isfinite(v) and v > best_score:
+                best_score = v
+                best_step = step
+        best_steps.append(best_step)
+    return best_steps
+
+
+def mean_std_metric_at_per_seed_best(per_seed_list, metric_name, best_steps_per_seed, *, as_percent):
+    """
+    Per-seed best step: collect one value of metric_name per seed; return mean and sample std.
+    as_percent True: [0,100] for LaTeX; False: raw [0,1] scores for plot bars.
+    """
+    scale = 100.0 if as_percent else 1.0
+    vals = []
+    for sd, bs in zip(per_seed_list, best_steps_per_seed):
+        if bs is None or bs not in sd["step"] or metric_name not in sd:
+            continue
+        idx = sd["step"].index(bs)
+        v = float(sd[metric_name]["mean"][idx])
+        if np.isfinite(v):
+            vals.append(v * scale)
+    return _mean_std_sample(vals)
+
+
+def composite_mean_std_at_per_seed_best(per_seed_list, selection_metric_names, best_steps_per_seed, *, as_percent):
+    """Per-seed composite (mean over selection_metric_names) at that seed's best step; mean/std across seeds."""
+    scale = 100.0 if as_percent else 1.0
+    vals = []
+    for sd, bs in zip(per_seed_list, best_steps_per_seed):
+        if bs is None:
+            continue
+        a = _average_scalar_at_step_single_seed(sd, bs, selection_metric_names)
+        if np.isfinite(a):
+            vals.append(a * scale)
+    return _mean_std_sample(vals)
+
 
 def average_curve_with_seed_spread(per_seed_metrics, metric_name_list):
     """
@@ -337,8 +386,9 @@ def average_curve_with_seed_spread(per_seed_metrics, metric_name_list):
             mean_curve.append(np.nan)
             std_curve.append(np.nan)
         else:
-            mean_curve.append(float(np.mean(seed_avgs)))
-            std_curve.append(0.0 if len(seed_avgs) < 2 else float(np.std(seed_avgs, ddof=1)))
+            m, s = _mean_std_sample(seed_avgs)
+            mean_curve.append(m)
+            std_curve.append(s)
     return np.array(all_steps_sorted), np.array(mean_curve), np.array(std_curve)
 
 def average_scalar_at_step_from_seed_curves(steps_arr, mean_arr, std_arr, step_target):
@@ -368,7 +418,7 @@ def extend_ylim_candidates_from_band(candidate_list, mean_arr, std_arr):
     candidate_list.extend((m - s)[finite].ravel().tolist())
 
 def _latex_cell_mean_pm_std(value, std, decimals):
-    """First table row: mean score ± std."""
+    """First table row: mean with LaTeX \\pm and std."""
     if not np.isfinite(value):
         return "N/A"
     s = float(std) if np.isfinite(std) else 0.0
@@ -411,11 +461,7 @@ def per_seed_avg_metrics_then_mean_std_across_seeds(
         a = _average_scalar_at_step_single_seed(seed_dict, step_target, metric_names_for_table)
         if np.isfinite(a):
             seed_avgs.append(a * 100.0)
-    if not seed_avgs:
-        return np.nan, 0.0
-    mean_across = float(np.mean(seed_avgs))
-    std_across = 0.0 if len(seed_avgs) < 2 else float(np.std(seed_avgs, ddof=1))
-    return mean_across, std_across
+    return _mean_std_sample(seed_avgs)
 
 def render_latex_table(
     results_storage,
@@ -428,7 +474,7 @@ def render_latex_table(
     decimals=1,
     decimals_average=2,
     output_path=None,
-    best_step_index_per_run=None,
+    best_steps_per_run=None,
     sorted_cache=None,
 ):
     rows = []
@@ -446,10 +492,10 @@ def render_latex_table(
                 "src":    ("run","best"),
             })
 
-    baseline_reference_values = {}
-    for metric_name in metric_names_for_table:
-        value = value_at_index_percentage(results_storage, sorted_cache, baseline_run_index, metric_name, step_index=None, use_initial=True)
-        baseline_reference_values[metric_name] = value
+    baseline_reference_values = {
+        name: value_at_index_percentage(sorted_cache, baseline_run_index, name, step_index=None, use_initial=True)
+        for name in metric_names_for_table
+    }
 
     baseline_mean_A_initial, baseline_std_A_initial = per_seed_avg_metrics_then_mean_std_across_seeds(
         results_storage,
@@ -479,32 +525,18 @@ def render_latex_table(
             if row["src"] == ("baseline", "initial"):
                 value = baseline_reference_values[metric_name]
                 std_pct = value_at_index_std_percentage(
-                    results_storage, sorted_cache, baseline_run_index, metric_name,
-                    step_index=None, use_initial=True,
+                    sorted_cache, baseline_run_index, metric_name, step_index=None, use_initial=True
                 )
-            elif row["src"] == ("baseline", "best"):
-                baseline_best_index = best_step_index_per_run[baseline_run_index]
-                value = value_at_index_percentage(
-                    results_storage, sorted_cache, baseline_run_index, metric_name,
-                    step_index=baseline_best_index, use_initial=False,
-                )
-                baseline_value = baseline_reference_values[metric_name]
-                std_pct = value_at_index_std_percentage(
-                    results_storage, sorted_cache, baseline_run_index, metric_name,
-                    step_index=baseline_best_index, use_initial=False,
-                )
+                baseline_value = None
             else:
-                run_index = row["idx"]
-                best_index = best_step_index_per_run[run_index]
-                value = value_at_index_percentage(
-                    results_storage, sorted_cache, run_index, metric_name,
-                    step_index=best_index, use_initial=False,
+                run_i = baseline_run_index if row["src"] == ("baseline", "best") else row["idx"]
+                value, std_pct = mean_std_metric_at_per_seed_best(
+                    results_storage["per_seed_metrics"][run_i],
+                    metric_name,
+                    best_steps_per_run[run_i],
+                    as_percent=True,
                 )
                 baseline_value = baseline_reference_values[metric_name]
-                std_pct = value_at_index_std_percentage(
-                    results_storage, sorted_cache, run_index, metric_name,
-                    step_index=best_index, use_initial=False,
-                )
 
             metric_cells_line1.append(_latex_cell_mean_pm_std(value, std_pct, decimals))
             if not np.isfinite(value):
@@ -517,25 +549,19 @@ def render_latex_table(
         if row["src"] == ("baseline", "initial"):
             mean_A, std_A = baseline_mean_A_initial, baseline_std_A_initial
         elif row["src"] == ("baseline", "best"):
-            baseline_best_index = best_step_index_per_run[baseline_run_index]
-            mean_A, std_A = per_seed_avg_metrics_then_mean_std_across_seeds(
-                results_storage,
-                sorted_cache,
-                baseline_run_index,
+            mean_A, std_A = composite_mean_std_at_per_seed_best(
+                results_storage["per_seed_metrics"][baseline_run_index],
                 metric_names_for_table,
-                step_index_merged=baseline_best_index,
-                use_initial=False,
+                best_steps_per_run[baseline_run_index],
+                as_percent=True,
             )
         else:
             run_index_avg = row["idx"]
-            best_idx_avg = best_step_index_per_run[run_index_avg]
-            mean_A, std_A = per_seed_avg_metrics_then_mean_std_across_seeds(
-                results_storage,
-                sorted_cache,
-                run_index_avg,
+            mean_A, std_A = composite_mean_std_at_per_seed_best(
+                results_storage["per_seed_metrics"][run_index_avg],
                 metric_names_for_table,
-                step_index_merged=best_idx_avg,
-                use_initial=False,
+                best_steps_per_run[run_index_avg],
+                as_percent=True,
             )
 
         if np.isfinite(mean_A) and np.isfinite(std_A):
@@ -653,14 +679,18 @@ def main(args):
         dispersion_order = ["Baseline"]
         rows_by_dispersion["Baseline"] = []
 
-    selection_metrics = [name for name in all_metric_names if 'perplexity' not in name.lower()]
-    best_step_index_per_run, sorted_cache = compute_best_steps(results_dict, selection_metrics)
+    selection_metrics = [name for name in all_metric_names if "perplexity" not in name.lower()]
+    sorted_cache = build_sorted_cache(results_dict)
+    best_steps_per_run = {
+        i: best_training_step_per_seed(results_dict["per_seed_metrics"][i], selection_metrics)
+        for i in range(len(results_dict["metrics"]))
+    }
 
-    metric_ylim_ranges = compute_metric_ylim_by_best_step(
+    metric_ylim_ranges = compute_metric_ylim_by_per_seed_best(
         results_storage=results_dict,
         all_metric_names=all_metric_names,
         baseline_run_index=baseline_run_index,
-        best_step_index_per_run=best_step_index_per_run,
+        best_steps_per_run=best_steps_per_run,
         sorted_cache=sorted_cache,
     )
 
@@ -697,18 +727,19 @@ def main(args):
             _, means_baseline, stds_baseline = sorted_cache[(baseline_run_index, metric_name)]
             stds_baseline = np.nan_to_num(np.asarray(stds_baseline, dtype=float), nan=0.0)
             if means_baseline.size > 0:
-                bar_labels.append('No mid-training')
+                bar_labels.append("No mid-training")
                 bar_heights.append(float(means_baseline[0]))
                 bar_errs.append(float(stds_baseline[0]) if stds_baseline.size > 0 else 0.0)
-                bar_colors.append('lightgray')
-
-            baseline_best_index = best_step_index_per_run[baseline_run_index]
-            if baseline_best_index is not None and means_baseline.size > baseline_best_index:
-                bar_labels.append('Default loss')
-                bar_heights.append(float(means_baseline[baseline_best_index]))
-                bar_errs.append(float(stds_baseline[baseline_best_index]) if stds_baseline.size > baseline_best_index else 0.0)
-                bar_colors.append('gray')
-                axis_lines.plot(steps_baseline, means_baseline, linestyle='--', linewidth=2, label='Default loss', color='black', alpha=0.5)
+                bar_colors.append("lightgray")
+                axis_lines.plot(
+                    steps_baseline,
+                    means_baseline,
+                    linestyle="--",
+                    linewidth=2,
+                    label="Default loss",
+                    color="black",
+                    alpha=0.5,
+                )
                 axis_lines.fill_between(
                     steps_baseline,
                     np.asarray(means_baseline, dtype=float) - stds_baseline,
@@ -717,10 +748,21 @@ def main(args):
                     alpha=0.12,
                 )
 
+            m_bl, s_bl = mean_std_metric_at_per_seed_best(
+                results_dict["per_seed_metrics"][baseline_run_index],
+                metric_name,
+                best_steps_per_run[baseline_run_index],
+                as_percent=False,
+            )
+            if np.isfinite(m_bl):
+                bar_labels.append("Default loss")
+                bar_heights.append(m_bl)
+                bar_errs.append(s_bl)
+                bar_colors.append("gray")
+
             for run_index in run_indices_for_row:
                 steps_run, means_run, stds_run = sorted_cache[(run_index, metric_name)]
                 stds_run = np.nan_to_num(np.asarray(stds_run, dtype=float), nan=0.0)
-                best_index = best_step_index_per_run[run_index]
                 coeff_scaled = coeff_scaled_for_colormap(
                     results_dict["dispersion"][run_index],
                     results_dict["dispersion_coeff"][run_index],
@@ -744,12 +786,13 @@ def main(args):
                     color=c,
                     alpha=0.2,
                 )
-                if (
-                    means_run.size > 0
-                    and best_index is not None
-                    and best_index < means_run.size
-                    and np.isfinite(means_run[best_index])
-                ):
+                m_run, s_run = mean_std_metric_at_per_seed_best(
+                    results_dict["per_seed_metrics"][run_index],
+                    metric_name,
+                    best_steps_per_run[run_index],
+                    as_percent=False,
+                )
+                if np.isfinite(m_run):
                     bar_labels.append(
                         format_run_label(
                             results_dict['dispersion'][run_index],
@@ -757,8 +800,8 @@ def main(args):
                             results_dict['dispersion_loc'][run_index],
                         )
                     )
-                    bar_heights.append(float(means_run[best_index]))
-                    bar_errs.append(float(stds_run[best_index]) if stds_run.size > best_index else 0.0)
+                    bar_heights.append(m_run)
+                    bar_errs.append(s_run)
                     bar_colors.append(c)
 
             axis_lines.set_xlabel("Step", fontsize=12)
@@ -804,7 +847,6 @@ def main(args):
         axis_average.spines["top"].set_visible(False)
         axis_average.spines["right"].set_visible(False)
 
-        baseline_best_index = best_step_index_per_run[baseline_run_index]
         per_seed_bl = results_dict["per_seed_metrics"][baseline_run_index]
         st_bl, avg_bl_m, avg_bl_s = average_curve_with_seed_spread(per_seed_bl, all_metric_names)
         avg_bl_s = np.nan_to_num(np.asarray(avg_bl_s, dtype=float), nan=0.0)
@@ -843,15 +885,18 @@ def main(args):
                 bar_errs_avg.append(e0)
                 bar_colors_avg.append("lightgray")
 
-        if baseline_best_index is not None and baseline_best_index < steps_merged_baseline.size:
-            sb = int(steps_merged_baseline[baseline_best_index])
-            mb, eb = average_scalar_at_step_from_seed_curves(st_bl, avg_bl_m, avg_bl_s, sb)
-            if np.isfinite(mb):
-                candidate_average_values.extend([mb, mb + eb, mb - eb])
-                bar_labels_avg.append("Default loss")
-                bar_heights_avg.append(mb)
-                bar_errs_avg.append(eb)
-                bar_colors_avg.append("gray")
+        mb, eb = composite_mean_std_at_per_seed_best(
+            per_seed_bl,
+            selection_metrics,
+            best_steps_per_run[baseline_run_index],
+            as_percent=False,
+        )
+        if np.isfinite(mb):
+            candidate_average_values.extend([mb, mb + eb, mb - eb])
+            bar_labels_avg.append("Default loss")
+            bar_heights_avg.append(mb)
+            bar_errs_avg.append(eb)
+            bar_colors_avg.append("gray")
 
         for run_index in run_indices_for_row:
             st_r, avg_r_m, avg_r_s = average_curve_with_seed_spread(
@@ -882,34 +927,31 @@ def main(args):
                 alpha=0.2,
             )
             extend_ylim_candidates_from_band(candidate_average_values, avg_r_m, avg_r_s)
-            best_index = best_step_index_per_run[run_index]
-            steps_run_merged = sorted_cache[(run_index, '__steps__')]
-            if best_index is not None and best_index < steps_run_merged.size:
-                sv = int(steps_run_merged[best_index])
-                mr, er = average_scalar_at_step_from_seed_curves(st_r, avg_r_m, avg_r_s, sv)
-                if np.isfinite(mr):
-                    candidate_average_values.extend([mr, mr + er, mr - er])
-                    bar_labels_avg.append(
-                        format_run_label(
-                            results_dict["dispersion"][run_index],
-                            results_dict["dispersion_coeff"][run_index],
-                            results_dict["dispersion_loc"][run_index],
-                        )
+            mr, er = composite_mean_std_at_per_seed_best(
+                results_dict["per_seed_metrics"][run_index],
+                selection_metrics,
+                best_steps_per_run[run_index],
+                as_percent=False,
+            )
+            if np.isfinite(mr):
+                candidate_average_values.extend([mr, mr + er, mr - er])
+                bar_labels_avg.append(
+                    format_run_label(
+                        results_dict["dispersion"][run_index],
+                        results_dict["dispersion_coeff"][run_index],
+                        results_dict["dispersion_loc"][run_index],
                     )
-                    bar_heights_avg.append(mr)
-                    bar_errs_avg.append(er)
-                    bar_colors_avg.append(c)
+                )
+                bar_heights_avg.append(mr)
+                bar_errs_avg.append(er)
+                bar_colors_avg.append(c)
 
         if candidate_average_values:
-            ymin = float(np.nanmin(candidate_average_values))
-            ymax = float(np.nanmax(candidate_average_values))
+            y_lo = float(np.nanmin(candidate_average_values))
+            y_hi = float(np.nanmax(candidate_average_values))
         else:
-            ymin, ymax = 0.0, 1.0
-        if ymax == ymin:
-            epsilon = 1e-6 if ymin == 0 else 0.01 * abs(ymin)
-            ymin, ymax = ymin - epsilon, ymax + epsilon
-        padding = 0.05 * (ymax - ymin)
-        axis_average.set_ylim(ymin - padding, ymax + padding)
+            y_lo, y_hi = np.nan, np.nan
+        axis_average.set_ylim(*_ylim_with_padding(y_lo, y_hi))
         axis_average.set_xlabel("Step", fontsize=12)
         axis_average.set_ylabel("Average", fontsize=12)
 
@@ -966,10 +1008,9 @@ def main(args):
     figure_bars.tight_layout(pad=2)
     figure_bars.savefig(figure_bars_save_path, dpi=300)
 
-    metrics_for_table = [name for name in all_metric_names if 'perplexity' not in name.lower()]
     render_latex_table(
         results_storage=results_dict,
-        metric_names_for_table=metrics_for_table,
+        metric_names_for_table=selection_metrics,
         baseline_run_index=baseline_run_index,
         rows_by_dispersion=rows_by_dispersion,
         dispersion_order=dispersion_order,
@@ -977,10 +1018,9 @@ def main(args):
         lora_suffix=lora_suffix,
         decimals=1,
         decimals_average=2,
-        best_step_index_per_run=best_step_index_per_run,
+        best_steps_per_run=best_steps_per_run,
         sorted_cache=sorted_cache,
     )
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Mid-train Qwen3 with a token budget.")

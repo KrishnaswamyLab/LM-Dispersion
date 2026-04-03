@@ -555,9 +555,15 @@ def main(args):
     )
     trainer.add_callback(lm_eval_callback)
 
+    torch.cuda.reset_peak_memory_stats()
+
     train_t0 = time.perf_counter()
     trainer.train()
     train_elapsed = time.perf_counter() - train_t0
+
+    peak_gb = torch.cuda.max_memory_allocated() / 1e9
+    log(f"Peak memory: {peak_gb:.2f} GB", filepath=args.log_path)
+
     if int(os.environ.get("LOCAL_RANK", "0")) == 0:
         eval_sec = lm_eval_callback.eval_wall_seconds
         train_wo_eval = max(0.0, train_elapsed - eval_sec)
