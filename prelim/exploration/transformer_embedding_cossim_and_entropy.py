@@ -15,12 +15,22 @@ import_dir = '/'.join(os.path.realpath(__file__).split("/")[:-2])
 sys.path.insert(0, import_dir)
 from utils.text_data import get_random_long_text
 from dse.dse import diffusion_spectral_entropy
+from utils.embedding_layer_metrics import (
+    hfc_lfc_ratio,
+    log_hfc_frobenius_relative,
+    pairwise_inner_products,
+    per_layer_hfc_lfc_ratio,
+    per_layer_inner_products,
+    per_layer_log_hfc_frobenius,
+    per_layer_singular_value_entropy_and_mev,
+    singular_value_entropy_and_mev,
+)
 
 
 def organize_embeddings(embeddings: List[torch.Tensor]) -> List[np.ndarray]:
     embeddings_by_layer = []
     for z in embeddings:
-        z = z.squeeze(0).cpu().numpy()
+        z = z.squeeze(0).float().cpu().numpy()
         embeddings_by_layer.append(z)
     return embeddings_by_layer
 
@@ -268,7 +278,47 @@ if __name__ == '__main__':
     parser.add_argument('--num-hidden-layers', type=int, default=None)
     parser.add_argument('--plot-all', action='store_true')
     parser.add_argument('--repetitions', type=int, default=100)
+    parser.add_argument(
+        '--metrics',
+        type=str,
+        choices=('all', 'cossim'),
+        default='all',
+        help=(
+            'all: original behavior, hidden-state cos-sim plus DSE outputs. '
+            'cossim: cos-sim only. Add --include-logits-layer to append logits cos-sim.'
+        ),
+    )
+    parser.add_argument(
+        '--include-logits-layer',
+        action='store_true',
+        help=(
+            'Append row-normalized logits cos-sim. This loads AutoModelForCausalLM first.'
+        ),
+    )
+    parser.add_argument(
+        '--save-layer-metrics',
+        action='store_true',
+        help='Also save inner products, HFC/LFC, singular-value entropy, MEV, and log-HFC metrics.',
+    )
+    parser.add_argument(
+        '--device-map',
+        type=str,
+        default=None,
+        help="Optional Hugging Face device_map, e.g. 'auto' for multi-GPU cluster runs.",
+    )
+    parser.add_argument(
+        '--output-tag',
+        type=str,
+        default=None,
+        help=(
+            'Optional tag appended to output basenames (npz, png, csv) so runs do not '
+            'overwrite previous files, e.g. Slurm job id. Unsafe characters are replaced.'
+        ),
+    )
     args = parser.parse_args()
+
+    compute_dse = args.metrics == 'all'
+    save_layer_metrics = args.save_layer_metrics
 
     if args.huggingface_token is not None:
         login(token=args.huggingface_token)
@@ -290,91 +340,213 @@ if __name__ == '__main__':
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_id, cache_dir=args.cache_dir, trust_remote_code=True)
     config = AutoConfig.from_pretrained(args.model_id, **config_kwargs, trust_remote_code=True)
-    try:
-        model = AutoModel.from_pretrained(args.model_id, config=config, cache_dir=args.cache_dir, trust_remote_code=True).eval()
-    except Exception as e:
-        print(f"Unable to process model: {args.model_id}. Error occurred: {e}.")
-        model = AutoModelForCausalLM.from_pretrained(args.model_id, cache_dir=args.cache_dir, trust_remote_code=True).eval()
+    model_kwargs = {
+        'cache_dir': args.cache_dir,
+        'trust_remote_code': True,
+    }
+    if args.device_map is not None:
+        model_kwargs['device_map'] = args.device_map
+
+    if args.include_logits_layer:
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                args.model_id,
+                config=config,
+                **model_kwargs,
+            ).eval()
+        except Exception as e:
+            print(f"Unable to load as CausalLM: {args.model_id}. Falling back to AutoModel. Error: {e}.")
+            model = AutoModel.from_pretrained(
+                args.model_id,
+                config=config,
+                **model_kwargs,
+            ).eval()
+    else:
+        try:
+            model = AutoModel.from_pretrained(
+                args.model_id,
+                config=config,
+                **model_kwargs,
+            ).eval()
+        except Exception as e:
+            print(f"Unable to process model: {args.model_id}. Error occurred: {e}.")
+            model = AutoModelForCausalLM.from_pretrained(
+                args.model_id,
+                **model_kwargs,
+            ).eval()
 
     # Extracting the cosine similarity by layer, and average over repetitions.
     cossim_matrix_by_layer = []
+    inner_matrix_by_layer = []
     DSE_by_layer = []
+    hfc_lfc_ratio_by_rep = None
+    singular_value_entropy_by_rep = None
+    mev_by_rep = None
+    log_hfc_frobenius_by_rep = None
+    embeddings_by_layer_last = None  # for optional plot_DSE when DSE is computed
+
     for random_seed in tqdm(range(args.repetitions)):
         torch.manual_seed(random_seed)
 
         # Run model on a random long input.
         text = get_random_long_text(args.dataset, random_seed=random_seed, min_word_count=1024, max_word_count=1280)
         tokens = tokenizer(text, return_tensors='pt', truncation=True, max_length=512)
+        device = next(model.parameters()).device
+        tokens = {k: v.to(device) for k, v in tokens.items()}
 
-        # Extract the cosine similarities among token embeddings (hidden states).
         with torch.no_grad():
             output = model(**tokens, output_hidden_states=True)
             embeddings_by_layer = organize_embeddings(output.hidden_states)
             curr_cossim_matrix_by_layer = compute_cosine_similarities(embeddings_by_layer)
-            curr_DSE_per_layer = np.array([
-                diffusion_spectral_entropy(embeddings, gaussian_kernel_sigma=10, t=10)
-                for embeddings in embeddings_by_layer])
+
+            if args.include_logits_layer and hasattr(output, 'logits'):
+                logits = torch.nn.functional.normalize(output.logits.squeeze(0).float(), dim=1)
+                logits_cossim = torch.matmul(logits, logits.T).clamp(-1, 1).cpu().numpy()
+                curr_cossim_matrix_by_layer.append(logits_cossim)
+
+            if save_layer_metrics:
+                curr_inner_by_layer = per_layer_inner_products(embeddings_by_layer)
+                curr_hfc_lfc = per_layer_hfc_lfc_ratio(embeddings_by_layer)
+                curr_sv_entropy, curr_mev = per_layer_singular_value_entropy_and_mev(embeddings_by_layer)
+                curr_log_hfc = per_layer_log_hfc_frobenius(embeddings_by_layer)
+                if args.include_logits_layer and hasattr(output, 'logits'):
+                    logits = torch.nn.functional.normalize(output.logits.squeeze(0).float(), dim=1)
+                    logits_np = logits.cpu().numpy()
+                    x0 = embeddings_by_layer[0]
+                    curr_inner_by_layer.append(pairwise_inner_products(logits_np))
+                    curr_hfc_lfc = np.append(curr_hfc_lfc, hfc_lfc_ratio(logits_np))
+                    ent_l, mev_l = singular_value_entropy_and_mev(logits_np)
+                    curr_sv_entropy = np.append(curr_sv_entropy, ent_l)
+                    curr_mev = np.append(curr_mev, mev_l)
+                    curr_log_hfc = np.append(
+                        curr_log_hfc, log_hfc_frobenius_relative(logits_np, x0)
+                    )
+            else:
+                curr_inner_by_layer = None
+                curr_hfc_lfc = None
+                curr_sv_entropy = None
+                curr_mev = None
+                curr_log_hfc = None
+
+            if compute_dse:
+                curr_DSE_per_layer = np.array([
+                    diffusion_spectral_entropy(embeddings, gaussian_kernel_sigma=10, t=10)
+                    for embeddings in embeddings_by_layer])
+                embeddings_by_layer_last = embeddings_by_layer
+            else:
+                curr_DSE_per_layer = None
 
         if random_seed == 0:
-            cossim_matrix_by_layer = [curr_cossim_matrix_by_layer[i][None, ...].clip(-1, 1) for i in range(len(curr_cossim_matrix_by_layer))]
-            DSE_by_layer = curr_DSE_per_layer[None, ...]
+            cossim_matrix_by_layer = [
+                curr_cossim_matrix_by_layer[i][None, ...].clip(-1, 1)
+                for i in range(len(curr_cossim_matrix_by_layer))
+            ]
+            if save_layer_metrics:
+                inner_matrix_by_layer = [
+                    curr_inner_by_layer[i][None, ...] for i in range(len(curr_inner_by_layer))
+                ]
+                hfc_lfc_ratio_by_rep = curr_hfc_lfc[None, ...]
+                singular_value_entropy_by_rep = curr_sv_entropy[None, ...]
+                mev_by_rep = curr_mev[None, ...]
+                log_hfc_frobenius_by_rep = curr_log_hfc[None, ...]
+            if compute_dse:
+                DSE_by_layer = curr_DSE_per_layer[None, ...]
         else:
             for i in range(len(cossim_matrix_by_layer)):
-                cossim_matrix_by_layer[i] = np.concatenate((cossim_matrix_by_layer[i],
-                                                            curr_cossim_matrix_by_layer[i][None, ...]),
-                                                           axis=0)
-            DSE_by_layer = np.concatenate((DSE_by_layer, curr_DSE_per_layer[None, ...]))
+                cossim_matrix_by_layer[i] = np.concatenate(
+                    (
+                        cossim_matrix_by_layer[i],
+                        curr_cossim_matrix_by_layer[i][None, ...],
+                    ),
+                    axis=0,
+                )
+            if save_layer_metrics:
+                for i in range(len(inner_matrix_by_layer)):
+                    inner_matrix_by_layer[i] = np.concatenate(
+                        (inner_matrix_by_layer[i], curr_inner_by_layer[i][None, ...]), axis=0
+                    )
+                hfc_lfc_ratio_by_rep = np.concatenate(
+                    (hfc_lfc_ratio_by_rep, curr_hfc_lfc[None, ...]), axis=0
+                )
+                singular_value_entropy_by_rep = np.concatenate(
+                    (singular_value_entropy_by_rep, curr_sv_entropy[None, ...]), axis=0
+                )
+                mev_by_rep = np.concatenate((mev_by_rep, curr_mev[None, ...]), axis=0)
+                log_hfc_frobenius_by_rep = np.concatenate(
+                    (log_hfc_frobenius_by_rep, curr_log_hfc[None, ...]), axis=0
+                )
+            if compute_dse:
+                DSE_by_layer = np.concatenate((DSE_by_layer, curr_DSE_per_layer[None, ...]), axis=0)
 
     for i in range(len(cossim_matrix_by_layer)):
         cossim_matrix_by_layer[i] = cossim_matrix_by_layer[i].mean(axis=0)
+    if save_layer_metrics:
+        for i in range(len(inner_matrix_by_layer)):
+            inner_matrix_by_layer[i] = inner_matrix_by_layer[i].mean(axis=0)
 
     # Plot and save histograms.
     model_name_cleaned = '-'.join(args.model_id.split('/'))
+    out_tag = (args.output_tag or '').strip().replace('/', '_').replace(' ', '_')
+    tag_suffix = f'_{out_tag}' if out_tag else ''
     plot_similarity_heatmap(
         cossim_matrix_by_layer,
-        save_path=f'../visualization/transformer/{model_name_cleaned}/embedding_cossim_heatmap_{model_name_cleaned}_{args.dataset}_layers_{config.num_hidden_layers}_heads_{config.num_attention_heads}.png')
+        save_path=f'../visualization/transformer/{model_name_cleaned}/embedding_cossim_heatmap_{model_name_cleaned}_{args.dataset}{tag_suffix}_layers_{config.num_hidden_layers}_heads_{config.num_attention_heads}.png')
 
     # Save results.
     cossim_matrix_by_layer = np.array(cossim_matrix_by_layer)
-    npz_cossim = f'../visualization/transformer/{model_name_cleaned}/results_cossim_{args.dataset}.npz'
+    npz_cossim = f'../visualization/transformer/{model_name_cleaned}/results_cossim_{args.dataset}{tag_suffix}.npz'
     np.savez(npz_cossim, cossim_matrix_by_layer=cossim_matrix_by_layer)
 
-    npz_DSE = f'../visualization/transformer/{model_name_cleaned}/results_DSE_{args.dataset}.npz'
-    np.savez(npz_DSE, DSE_by_layer=DSE_by_layer)
+    if compute_dse:
+        npz_DSE = f'../visualization/transformer/{model_name_cleaned}/results_DSE_{args.dataset}{tag_suffix}.npz'
+        np.savez(npz_DSE, DSE_by_layer=DSE_by_layer)
 
-    csv_DSE = f'../visualization/transformer/{model_name_cleaned}/results_DSE_{args.dataset}.csv'
-    columns = [
-        'model_name',
-        'first_layer_mean', 'first_layer_std',
-        'mean_mean', 'mean_std',
-        'last_layer_mean', 'last_layer_std'
-    ]
-    new_data = {
-        'model_name': model_name_cleaned,
-        'first_layer_mean': DSE_by_layer.mean(axis=0)[0],
-        'first_layer_std': DSE_by_layer.std(axis=0)[0],
-        'mean_mean': DSE_by_layer.mean(axis=0).mean(),
-        'mean_std': DSE_by_layer.mean(axis=0).std(),
-        'last_layer_mean': DSE_by_layer.mean(axis=0)[-1],
-        'last_layer_std': DSE_by_layer.std(axis=0)[-1],
-    }
-    if os.path.exists(csv_DSE):
-        df = pd.read_csv(csv_DSE)
-    else:
-        df = pd.DataFrame(columns=columns)
-    df = pd.concat([df, pd.DataFrame([new_data])], ignore_index=True)
-    df.to_csv(csv_DSE, index=False)
+        csv_DSE = f'../visualization/transformer/{model_name_cleaned}/results_DSE_{args.dataset}{tag_suffix}.csv'
+        columns = [
+            'model_name',
+            'first_layer_mean', 'first_layer_std',
+            'mean_mean', 'mean_std',
+            'last_layer_mean', 'last_layer_std'
+        ]
+        new_data = {
+            'model_name': model_name_cleaned,
+            'first_layer_mean': DSE_by_layer.mean(axis=0)[0],
+            'first_layer_std': DSE_by_layer.std(axis=0)[0],
+            'mean_mean': DSE_by_layer.mean(axis=0).mean(),
+            'mean_std': DSE_by_layer.mean(axis=0).std(),
+            'last_layer_mean': DSE_by_layer.mean(axis=0)[-1],
+            'last_layer_std': DSE_by_layer.std(axis=0)[-1],
+        }
+        if os.path.exists(csv_DSE):
+            df = pd.read_csv(csv_DSE)
+        else:
+            df = pd.DataFrame(columns=columns)
+        df = pd.concat([df, pd.DataFrame([new_data])], ignore_index=True)
+        df.to_csv(csv_DSE, index=False)
+
+    if save_layer_metrics:
+        inner_product_matrix_by_layer = np.array(inner_matrix_by_layer)
+        npz_metrics = f'../visualization/transformer/{model_name_cleaned}/results_layer_metrics_{args.dataset}{tag_suffix}.npz'
+        np.savez(
+            npz_metrics,
+            inner_product_matrix_by_layer=inner_product_matrix_by_layer,
+            hfc_lfc_ratio_by_rep=hfc_lfc_ratio_by_rep,
+            singular_value_entropy_by_rep=singular_value_entropy_by_rep,
+            mev_by_rep=mev_by_rep,
+            log_hfc_frobenius_by_rep=log_hfc_frobenius_by_rep,
+        )
 
     if args.plot_all:
         plot_similarity_histograms(
             cossim_matrix_by_layer,
-            save_path=f'../visualization/transformer/{model_name_cleaned}/embedding_cossim_histogram_{model_name_cleaned}_{args.dataset}_layers_{config.num_hidden_layers}_heads_{config.num_attention_heads}.png')
+            save_path=f'../visualization/transformer/{model_name_cleaned}/embedding_cossim_histogram_{model_name_cleaned}_{args.dataset}{tag_suffix}_layers_{config.num_hidden_layers}_heads_{config.num_attention_heads}.png')
         plot_probability(
             cossim_matrix_by_layer,
-            save_path=f'../visualization/transformer/{model_name_cleaned}/embedding_cossim_probability_{model_name_cleaned}_{args.dataset}_layers_{config.num_hidden_layers}_heads_{config.num_attention_heads}.png')
+            save_path=f'../visualization/transformer/{model_name_cleaned}/embedding_cossim_probability_{model_name_cleaned}_{args.dataset}{tag_suffix}_layers_{config.num_hidden_layers}_heads_{config.num_attention_heads}.png')
         plot_entropy(
             cossim_matrix_by_layer,
-            save_path=f'../visualization/transformer/{model_name_cleaned}/embedding_cossim_entropy_{model_name_cleaned}_{args.dataset}_layers_{config.num_hidden_layers}_heads_{config.num_attention_heads}.png')
-        plot_DSE(
-            embeddings_by_layer,
-            save_path=f'../visualization/transformer/{model_name_cleaned}/embedding_DSE_{model_name_cleaned}_{args.dataset}_layers_{config.num_hidden_layers}_heads_{config.num_attention_heads}.png')
+            save_path=f'../visualization/transformer/{model_name_cleaned}/embedding_cossim_entropy_{model_name_cleaned}_{args.dataset}{tag_suffix}_layers_{config.num_hidden_layers}_heads_{config.num_attention_heads}.png')
+        if compute_dse and embeddings_by_layer_last is not None:
+            plot_DSE(
+                embeddings_by_layer_last,
+                save_path=f'../visualization/transformer/{model_name_cleaned}/embedding_DSE_{model_name_cleaned}_{args.dataset}{tag_suffix}_layers_{config.num_hidden_layers}_heads_{config.num_attention_heads}.png')
