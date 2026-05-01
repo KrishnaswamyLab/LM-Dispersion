@@ -14,8 +14,12 @@
 
 </div>
 
+### Krishnaswamy Lab, Yale University
+
 This is the official repository for the ICML 2026 paper
 <br>[Dispersion loss counteracts embedding condensation and improves generalization in small language models](https://arxiv.org/pdf/2602.00217).
+
+Please raise issues [here](https://github.com/ChenLiu-1996/LM-Dispersion).
 
 
 ## A 5-minute intro to this paper
