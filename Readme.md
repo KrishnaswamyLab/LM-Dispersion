@@ -24,8 +24,8 @@ a narrow cone in the representation space.
 
 <img src="assets/motivation.png" width="800">
 
-- Takeaway 1: Larger model, less condensation.
-Within the same model family, smaller models exhibit embedding condensation, with token embeddings collapsing toward near-parallel directions, while larger models resist this collapse.
+<b>Takeaway 1</b>: Larger model, less condensation.
+<br>Within the same model family, smaller models exhibit embedding condensation, with token embeddings collapsing toward near-parallel directions, while larger models resist this collapse.
 
 <img src="assets/observation.png" width="800">
 
@@ -33,13 +33,13 @@ To further isolate the effect of model size from other confounding factors, we c
 
 <img src="assets/controlled_experiment.png" width="800">
 
-- Takeaway 2: Condensation occurs early on.
-The embedding condensation phenomenon emerges at model initialization and is gradually mitigated, not exacerbated, by pre-training.
+<b>Takeaway 2</b>: Condensation occurs early on.
+<br>The embedding condensation phenomenon emerges at model initialization and is gradually mitigated, not exacerbated, by pre-training.
 
 <img src="assets/observation_training.png" width="400">
 
-- Takeaway 3: Distillation is not a solution.
-Knowledge distillation from a larger model does not transfer the desired resistance to embedding condensation.
+<b>Takeaway 3</b>: Distillation is not a solution.
+<br>Knowledge distillation from a larger model does not transfer the desired resistance to embedding condensation.
 
 <img src="assets/observation_distillation.png" width="800">
 
