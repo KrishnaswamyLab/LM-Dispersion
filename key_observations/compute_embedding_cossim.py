@@ -85,6 +85,7 @@ if __name__ == '__main__':
     parser.add_argument('--num-attention-heads', type=int, default=None)
     parser.add_argument('--num-hidden-layers', type=int, default=None)
     parser.add_argument('--repetitions', type=int, default=100)
+    parser.add_argument('--gpu', action='store_true')
     parser.add_argument('--include-logits-layer', action='store_true')
     args = parser.parse_args()
 
@@ -141,6 +142,12 @@ if __name__ == '__main__':
                 **model_kwargs,
             ).eval()
 
+    if args.gpu:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    else:
+        device = torch.device('cpu')
+    model.to(device)
+
     # Extracting the cosine similarity by layer, and average over repetitions.
     cossim_matrix_by_layer = []
 
@@ -186,9 +193,9 @@ if __name__ == '__main__':
     model_name_cleaned = '-'.join(args.model_id.split('/'))
     plot_similarity_heatmap(
         cossim_matrix_by_layer,
-        save_path=f'../visualization/transformer/{model_name_cleaned}/embedding_cossim_heatmap_{model_name_cleaned}_{args.dataset}_layers_{config.num_hidden_layers}_heads_{config.num_attention_heads}.png')
+        save_path=f'./visualization/{model_name_cleaned}/embedding_cossim_heatmap_{model_name_cleaned}_{args.dataset}_layers_{config.num_hidden_layers}_heads_{config.num_attention_heads}.png')
 
     # Save results.
     cossim_matrix_by_layer = np.array(cossim_matrix_by_layer)
-    npz_cossim = f'../visualization/transformer/{model_name_cleaned}/results_cossim_{args.dataset}.npz'
+    npz_cossim = f'./visualization/{model_name_cleaned}/results_cossim_{args.dataset}.npz'
     np.savez(npz_cossim, cossim_matrix_by_layer=cossim_matrix_by_layer)

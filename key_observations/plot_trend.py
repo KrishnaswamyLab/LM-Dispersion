@@ -77,34 +77,20 @@ def plot_condensation_trend(model_id_list: List[str],
                             cossim_matrix_list: List[np.array],
                             spearman_corr_list: List[float],
                             kendall_tau_list: List[float],
-                            mean_last_n_by_model: List[np.ndarray] = None,
                             paired: bool = False,
                             bins: int = 128,
                             save_path: str = None):
 
     plt.rcParams['font.family'] = 'sans-serif'
-    include_last_n_panel = mean_last_n_by_model is not None
     if paired:
         num_models_each = len(model_id_list) // 2
         width_ratios = [1.8, 0.05] + [1] * num_models_each
-        if include_last_n_panel:
-            fig = plt.figure(figsize=(9 * np.sum(width_ratios), 22))
-            gs = gridspec.GridSpec(
-                3, num_models_each + 2, width_ratios=width_ratios, height_ratios=[1, 1, 0.75]
-            )
-        else:
-            fig = plt.figure(figsize=(9 * np.sum(width_ratios), 18))
-            gs = gridspec.GridSpec(2, num_models_each + 2, width_ratios=width_ratios)
+        fig = plt.figure(figsize=(9 * np.sum(width_ratios), 18))
+        gs = gridspec.GridSpec(2, num_models_each + 2, width_ratios=width_ratios)
     else:
         width_ratios = [1, 0.05] + [1] * len(model_id_list)
-        if include_last_n_panel:
-            fig = plt.figure(figsize=(8.5 * np.sum(width_ratios), 11))
-            gs = gridspec.GridSpec(
-                2, len(model_id_list) + 2, width_ratios=width_ratios, height_ratios=[2.2, 1.0]
-            )
-        else:
-            fig = plt.figure(figsize=(8.5 * np.sum(width_ratios), 8))
-            gs = gridspec.GridSpec(1, len(model_id_list) + 2, width_ratios=width_ratios)
+        fig = plt.figure(figsize=(8.5 * np.sum(width_ratios), 8))
+        gs = gridspec.GridSpec(1, len(model_id_list) + 2, width_ratios=width_ratios)
 
     for model_idx in range(len(model_id_list)):
         if paired:
@@ -143,14 +129,9 @@ def plot_condensation_trend(model_id_list: List[str],
         cbar.ax.set_title('Probability\nDensity', fontsize=20, pad=20)
 
     if paired:
-        plot_trend_metrics_paired(gs[0:2, 0] if include_last_n_panel else gs[:, 0],
-                                  fig, model_id_list, spearman_corr_list, kendall_tau_list)
-        if include_last_n_panel:
-            plot_mean_last_n_panel(fig, gs[2, :], model_id_list, mean_last_n_by_model)
+        plot_trend_metrics_paired(gs[:, 0], fig, model_id_list, spearman_corr_list, kendall_tau_list)
     else:
         plot_trend_metrics(gs[0, 0], fig, model_id_list, spearman_corr_list, kendall_tau_list)
-        if include_last_n_panel:
-            plot_mean_last_n_panel(fig, gs[1, :], model_id_list, mean_last_n_by_model)
 
     fig.tight_layout(pad=2)
 
@@ -162,54 +143,78 @@ def plot_condensation_trend(model_id_list: List[str],
         plt.show()
     return
 
-def plot_mean_last_n_panel(fig, subplotspec, model_id_list, mean_last_n_by_model):
-    ax = fig.add_subplot(subplotspec)
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    colors = plt.cm.tab10(np.linspace(0, 0.9, max(len(model_id_list), 1)))
-    for i, model_id in enumerate(model_id_list):
-        y = mean_last_n_by_model[i]
-        if y.size == 0:
-            continue
-        n_axis = np.arange(1, len(y) + 1)
-        ax.plot(n_axis, y, color=colors[i % len(colors)], linewidth=2.5, marker='o', markersize=4,
-                label=display_name(model_id).replace('\n', ' '))
-    ax.set_xlabel(r'$N$ (last layers)', fontsize=22)
-    ax.set_ylabel('Mean cossim\n(avg. over last $N$ layers)', fontsize=20)
-    ax.tick_params(axis='both', which='major', labelsize=18)
-    ax.legend(loc='best', fontsize=11, ncol=2)
-    ax.set_title('Mean layer-mean cosine similarity over last $N$ hidden layers', fontsize=20, pad=8)
-    return ax
+def plot_condensation_trend_with_last_n(model_id_list: List[str],
+                                        spearman_corr_list: List[float],
+                                        kendall_tau_list: List[float],
+                                        mean_last_n_by_model: List[np.array],
+                                        save_path: str = None):
+
+    plt.rcParams['font.family'] = 'sans-serif'
+    width_ratios = [1, 0.05, 1, 1, 1, 1, 1, 1]
+    fig = plt.figure(figsize=(8.5 * np.sum(width_ratios), 8))
+    gs = gridspec.GridSpec(1, len(width_ratios), width_ratios=width_ratios)
+
+    plot_trend_metrics(gs[0, 0], fig, model_id_list, spearman_corr_list, kendall_tau_list)
+
+    for layer_idx in range(5):
+        mean_last_n = [mean_last_n_by_model[i][layer_idx] for i in range(len(model_id_list))]
+        plot_trend_metrics(gs[0, 2 + layer_idx], fig, model_id_list, mean_last_n, metric_1_name=f"Mean of last {layer_idx + 1} layers")
+
+    mean_last_n = [mean_last_n_by_model[i][len(mean_last_n_by_model[i])//2] for i in range(len(model_id_list))]
+    plot_trend_metrics(gs[0, 7], fig, model_id_list, mean_last_n, metric_1_name=f"Mean of last N/2 layers")
+
+    fig.tight_layout(pad=2)
+
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        fig.savefig(save_path, dpi=300)
+        plt.close(fig)
+    else:
+        plt.show()
+    return
 
 
-def plot_trend_metrics(subplotspec, fig, model_id_list, spearman_corr_list, kendall_tau_list):
+def plot_trend_metrics(subplotspec,
+                       fig,
+                       model_id_list,
+                       metric_1_list: List[float],
+                       metric_2_list: List[float] = None,
+                       metric_1_name: str = 'Spearman Correlation',
+                       metric_2_name: str = "Kendall's Tau"):
     ax = fig.add_subplot(subplotspec)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     colors = plt.cm.Blues(np.linspace(0.3, 0.9, len(model_id_list)))
     for i in range(len(model_id_list) - 1):
-        ax.plot(np.arange(len(model_id_list))[i : i+2], spearman_corr_list[i : i+2], color=colors[i], linewidth=4)
-    ax.scatter(np.arange(len(model_id_list)), spearman_corr_list, color=colors, s=120)
-    ax.set_ylabel('Spearman Correlation', labelpad=12, fontsize=30, color=colors[-1])
+        ax.plot(np.arange(len(model_id_list))[i : i+2], metric_1_list[i : i+2], color=colors[i], linewidth=4)
+    ax.scatter(np.arange(len(model_id_list)), metric_1_list, color=colors, s=120)
+    ax.set_ylabel(metric_1_name, labelpad=12, fontsize=30, color=colors[-1])
     ax.set_ylim([-1, 1.05])
     ax.set_xlim([-0.3, len(model_id_list) - 0.7])
     ax.tick_params(axis='both', which='major', labelsize=26)
     ax.set_xticks(np.arange(len(model_id_list)))
     ax.set_xticklabels([display_name(model_id) for model_id in model_id_list], fontsize=24, rotation=45, ha='right')
 
-    ax2 = ax.twinx()
-    ax2.spines['top'].set_visible(False)
-    ax2.spines['left'].set_visible(False)
-    colors = plt.cm.Reds(np.linspace(0.3, 0.9, len(model_id_list)))
-    for i in range(len(model_id_list) - 1):
-        ax2.plot(np.arange(len(model_id_list))[i : i+2], kendall_tau_list[i : i+2], color=colors[i], linewidth=4)
-    ax2.scatter(np.arange(len(model_id_list)), kendall_tau_list, color=colors, s=120)
-    ax2.set_ylabel("Kendall's Tau", labelpad=36, fontsize=30, rotation=270, color=colors[-1])
-    ax2.set_ylim([-1, 1.05])
-    ax2.tick_params(axis='both', which='major', labelsize=26)
+    if metric_2_list is not None:
+        ax2 = ax.twinx()
+        ax2.spines['top'].set_visible(False)
+        ax2.spines['left'].set_visible(False)
+        colors = plt.cm.Reds(np.linspace(0.3, 0.9, len(model_id_list)))
+        for i in range(len(model_id_list) - 1):
+            ax2.plot(np.arange(len(model_id_list))[i : i+2], metric_2_list[i : i+2], color=colors[i], linewidth=4)
+        ax2.scatter(np.arange(len(model_id_list)), metric_2_list, color=colors, s=120)
+        ax2.set_ylabel(metric_2_name, labelpad=36, fontsize=30, rotation=270, color=colors[-1])
+        ax2.set_ylim([-1, 1.05])
+        ax2.tick_params(axis='both', which='major', labelsize=26)
     return ax
 
-def plot_trend_metrics_paired(subplotspec, fig, model_id_list, spearman_corr_list, kendall_tau_list):
+def plot_trend_metrics_paired(subplotspec,
+                              fig,
+                              model_id_list,
+                              metric_1_list: List[float],
+                              metric_2_list: List[float] = None,
+                              metric_1_name: str = "Spearman Correlation",
+                              metric_2_name: str = "Kendall's Tau"):
     assert len(model_id_list) % 2 == 0, 'Paired plotting require even number of models!'
     ax = fig.add_subplot(subplotspec)
     ax.spines['top'].set_visible(False)
@@ -217,38 +222,39 @@ def plot_trend_metrics_paired(subplotspec, fig, model_id_list, spearman_corr_lis
     num_models_each = len(model_id_list) // 2
     colors = plt.cm.Blues(np.linspace(0.3, 0.9, num_models_each))
     for i in range(num_models_each - 1):
-        ax.plot(np.arange(num_models_each)[i : i+2], spearman_corr_list[i : i+2], color=colors[i], linewidth=4)
+        ax.plot(np.arange(num_models_each)[i : i+2], metric_1_list[i : i+2], color=colors[i], linewidth=4)
     for i in range(num_models_each - 1):
         ax.plot(num_models_each + np.arange(num_models_each)[i : i+2],
-                spearman_corr_list[num_models_each + i : num_models_each + i+2], color=colors[i], linewidth=4)
+                metric_1_list[num_models_each + i : num_models_each + i+2], color=colors[i], linewidth=4)
     for i in range(num_models_each):
-        ax.plot([i, num_models_each + i], [spearman_corr_list[i], spearman_corr_list[num_models_each + i]],
+        ax.plot([i, num_models_each + i], [metric_1_list[i], metric_1_list[num_models_each + i]],
                 color=colors[i], linewidth=2, linestyle='--')
-    ax.scatter(np.arange(num_models_each), spearman_corr_list[:num_models_each], color=colors, s=120)
-    ax.scatter(num_models_each + np.arange(num_models_each), spearman_corr_list[num_models_each:], color=colors, s=120)
-    ax.set_ylabel('Spearman Correlation', labelpad=12, fontsize=30, color=colors[-1])
+    ax.scatter(np.arange(num_models_each), metric_1_list[:num_models_each], color=colors, s=120)
+    ax.scatter(num_models_each + np.arange(num_models_each), metric_1_list[num_models_each:], color=colors, s=120)
+    ax.set_ylabel(metric_1_name, labelpad=12, fontsize=30, color=colors[-1])
     ax.set_ylim([-1, 1.05])
     ax.tick_params(axis='both', which='major', labelsize=26)
     ax.set_xticks(np.arange(len(model_id_list)))
     ax.set_xticklabels([display_name(model_id) for model_id in model_id_list], fontsize=24, rotation=45, ha='right')
 
-    ax2 = ax.twinx()
-    ax2.spines['top'].set_visible(False)
-    ax2.spines['left'].set_visible(False)
-    colors = plt.cm.Reds(np.linspace(0.3, 0.9, num_models_each))
-    for i in range(num_models_each - 1):
-        ax2.plot(np.arange(num_models_each)[i : i+2], kendall_tau_list[i : i+2], color=colors[i], linewidth=4)
-    for i in range(num_models_each - 1):
-        ax2.plot(num_models_each + np.arange(num_models_each)[i : i+2],
-                 kendall_tau_list[num_models_each + i : num_models_each + i+2], color=colors[i], linewidth=4)
-    for i in range(num_models_each):
-        ax2.plot([i, num_models_each + i], [kendall_tau_list[i], kendall_tau_list[num_models_each + i]],
-                 color=colors[i], linewidth=2, linestyle='--')
-    ax2.scatter(np.arange(num_models_each), kendall_tau_list[:num_models_each], color=colors, s=120)
-    ax2.scatter(num_models_each + np.arange(num_models_each), kendall_tau_list[num_models_each:], color=colors, s=120)
-    ax2.set_ylabel("Kendall's Tau", labelpad=36, fontsize=30, rotation=270, color=colors[-1])
-    ax2.set_ylim([-1, 1.05])
-    ax2.tick_params(axis='both', which='major', labelsize=26)
+    if metric_2_list is not None:
+        ax2 = ax.twinx()
+        ax2.spines['top'].set_visible(False)
+        ax2.spines['left'].set_visible(False)
+        colors = plt.cm.Reds(np.linspace(0.3, 0.9, num_models_each))
+        for i in range(num_models_each - 1):
+            ax2.plot(np.arange(num_models_each)[i : i+2], metric_2_list[i : i+2], color=colors[i], linewidth=4)
+        for i in range(num_models_each - 1):
+            ax2.plot(num_models_each + np.arange(num_models_each)[i : i+2],
+                    metric_2_list[num_models_each + i : num_models_each + i+2], color=colors[i], linewidth=4)
+        for i in range(num_models_each):
+            ax2.plot([i, num_models_each + i], [metric_2_list[i], metric_2_list[num_models_each + i]],
+                    color=colors[i], linewidth=2, linestyle='--')
+        ax2.scatter(np.arange(num_models_each), metric_2_list[:num_models_each], color=colors, s=120)
+        ax2.scatter(num_models_each + np.arange(num_models_each), metric_2_list[num_models_each:], color=colors, s=120)
+        ax2.set_ylabel(metric_2_name, labelpad=36, fontsize=30, rotation=270, color=colors[-1])
+        ax2.set_ylim([-1, 1.05])
+        ax2.tick_params(axis='both', which='major', labelsize=26)
     return ax
 
 if __name__ == '__main__':
@@ -257,37 +263,8 @@ if __name__ == '__main__':
     parser.add_argument('--model-family', type=str, default='albert')
     parser.add_argument('--paired', action='store_true')
     parser.add_argument('--dataset', type=str, default='wikipedia')
-    parser.add_argument(
-        '--output-tag',
-        type=str,
-        default=None,
-        help='Optional tag matching results_cossim_{dataset}_{tag}.npz from compute runs.',
-    )
-    parser.add_argument(
-        '--table-only',
-        action='store_true',
-        help='Skip figure; only print metrics and write CSV.',
-    )
-    parser.add_argument(
-        '--include-last-n-panel',
-        action='store_true',
-        help='Add a last-N layer mean panel to the trend figure.',
-    )
-    parser.add_argument(
-        '--write-csv',
-        action='store_true',
-        help='Write last-N metrics to CSV.',
-    )
-    parser.add_argument(
-        '--csv-path',
-        type=str,
-        default=None,
-        help='Override CSV path (default: ../visualization/transformer/_trend/{family}_last_n_metrics.csv).',
-    )
+    parser.add_argument('--last-n', action='store_true')
     args = parser.parse_args()
-
-    out_tag = (args.output_tag or '').strip().replace('/', '_').replace(' ', '_')
-    tag_suffix = f'_{out_tag}' if out_tag else ''
 
     model_id_list, cossim_matrix_list = [], []
     spearman_corr_list, kendall_tau_list = [], []
@@ -297,8 +274,8 @@ if __name__ == '__main__':
     for model_id in args.model_id:
         model_name_cleaned = '-'.join(model_id.split('/'))
         npz_cossim = (
-            f'../visualization/transformer/{model_name_cleaned}/'
-            f'results_cossim_{args.dataset}{tag_suffix}.npz'
+            f'./visualization/{model_name_cleaned}/'
+            f'results_cossim_{args.dataset}.npz'
         )
         cossim_matrix_by_layer = np.load(npz_cossim)['cossim_matrix_by_layer']
         mean_cossim_by_layer = cossim_matrix_by_layer.mean(axis=(1, 2))
@@ -323,20 +300,9 @@ if __name__ == '__main__':
                     'kendall_tau_vs_layer_index': kendell_tau,
                 }
             )
-        if args.table_only or args.include_last_n_panel or args.write_csv or args.csv_path:
-            print(f'\n=== {model_id} ===')
-            print('Spearman(layer_mean_cossim, layer_index):', spearman_corr)
-            print("Kendall's tau:", kendell_tau)
-            print('Mean cossim averaged over last N layers (N=1..L):')
-            for n, val in enumerate(mean_last_n, start=1):
-                print(f'  N={n}: {val:.6f}')
 
-    trend_dir = '../visualization/transformer/_trend'
-    should_write_csv = args.write_csv or args.csv_path is not None or args.table_only
-    if should_write_csv and rows_csv:
-        csv_path = args.csv_path or os.path.join(
-            trend_dir, f'{args.model_family}_last_n_metrics{tag_suffix}.csv'
-        )
+    if rows_csv:
+        csv_path = f'./visualization/_trend/{args.model_family}_{args.dataset}_last_n_metrics.csv'
         csv_dir = os.path.dirname(os.path.abspath(csv_path))
         if csv_dir:
             os.makedirs(csv_dir, exist_ok=True)
@@ -344,15 +310,21 @@ if __name__ == '__main__':
             w = csv.DictWriter(f, fieldnames=list(rows_csv[0].keys()))
             w.writeheader()
             w.writerows(rows_csv)
-        print(f'\nWrote {csv_path}')
 
-    if not args.table_only:
-        plot_condensation_trend(
+    plot_condensation_trend(
+        model_id_list=model_id_list,
+        cossim_matrix_list=cossim_matrix_list,
+        spearman_corr_list=spearman_corr_list,
+        kendall_tau_list=kendall_tau_list,
+        paired=args.paired,
+        save_path=os.path.join('./visualization/_trend', f'{args.model_family}_{args.dataset}.png'),
+    )
+
+    if args.last_n and not args.paired:
+        plot_condensation_trend_with_last_n(
             model_id_list=model_id_list,
-            cossim_matrix_list=cossim_matrix_list,
             spearman_corr_list=spearman_corr_list,
             kendall_tau_list=kendall_tau_list,
-            mean_last_n_by_model=mean_last_n_by_model if args.include_last_n_panel else None,
-            paired=args.paired,
-            save_path=os.path.join(trend_dir, f'{args.model_family}{tag_suffix}.png'),
+            mean_last_n_by_model=mean_last_n_by_model,
+            save_path=os.path.join('./visualization/_trend', f'{args.model_family}_{args.dataset}_with_last_n.png'),
         )
