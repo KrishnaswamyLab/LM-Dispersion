@@ -6,7 +6,7 @@
   [![ICML 2026](https://img.shields.io/badge/ICML_2026-purple)](https://openreview.net/pdf?id=pd6A7jB5D6)
   [![arXiv](https://img.shields.io/badge/arXiv-Dispersion-firebrick)](https://arxiv.org/abs/2602.00217)
   [![PDF](https://img.shields.io/badge/PDF-DADBDD)](https://arxiv.org/pdf/2602.00217)
-  [![GitHub Stars](https://img.shields.io/github/stars/ChenLiu-1996/LM-Dispersion.svg?style=social\&label=Stars)](https://github.com/ChenLiu-1996/LM-Dispersion)
+  [![GitHub Stars](https://img.shields.io/github/stars/KrishnaswamyLab/LM-Dispersion.svg?style=social\&label=Stars)](https://github.com/KrishnaswamyLab/LM-Dispersion)
   <br>[![LinkedIn](https://img.shields.io/badge/LinkedIn-Chen-blue)](https://www.linkedin.com/in/chenliu1996/)
   [![Google Scholar](https://img.shields.io/badge/Google_Scholar-Chen-4a86cf?logo=google-scholar&logoColor=white)](https://scholar.google.com/citations?user=3rDjnykAAAAJ&sortby=pubdate)
   <br>[![Twitter Follow](https://img.shields.io/twitter/follow/Chen.svg?style=social)](https://x.com/ChenLiu_1996)
