@@ -24,7 +24,7 @@ This is an observation-driven improvement on language model training. We observe
 <img src="assets/motivation.png" width="800">
 
 <b>Takeaway 1</b>: Larger model, less condensation.
-<br>Within the same model family, smaller models exhibit embedding condensation, with token embeddings collapsing toward near-parallel directions, while larger models resist this collapse.
+<br>Within the same model family, smaller models exhibit more severe embedding condensation, with token embeddings collapsing toward near-parallel directions, while larger models resist this collapse.
 
 <img src="assets/observation.png" width="800">
 
