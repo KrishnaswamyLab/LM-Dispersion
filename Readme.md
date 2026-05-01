@@ -29,7 +29,7 @@ a narrow cone in the representation space.
 
 <img src="assets/observation.png" width="800">
 
-To further isolate the effect of model size from other confounding factors, we construct a controlled experiment where we pre-train GPT2-like models by varying only the MLP dimension while keeping all other components fixed, including the number of layers, embedding dimension, dataset, and training settings. The same phenomenon is observed.
+To further isolate the effect of model size from other confounding factors, we conduct a controlled experiment where we pre-train GPT2-like models, varying only the MLP dimension while keeping all other components fixed, including the number of layers, embedding dimension, dataset, and training settings. The same phenomenon is observed.
 
 <img src="assets/controlled_experiment.png" width="800">
 
