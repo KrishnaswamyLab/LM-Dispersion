@@ -15,8 +15,7 @@
 </div>
 
 This is the official repository for the ICML 2026 paper
-
-[Dispersion loss counteracts embedding condensation and improves generalization in small language models](https://arxiv.org/pdf/2602.00217).
+<br>[Dispersion loss counteracts embedding condensation and improves generalization in small language models](https://arxiv.org/pdf/2602.00217).
 
 
 ## Citation
