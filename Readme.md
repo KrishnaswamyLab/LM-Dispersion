@@ -43,7 +43,7 @@ We observe a geometric phenomenon which we term **embedding condensation**, wher
 
 This effect is also quite robust to the choice of input datasets.
 
-<img src="assets/supp_change_dataset.pnt" width="800">
+<img src="assets/supp_change_dataset.png" width="800">
 
 To isolate the effect of model size from other confounding factors, we conduct a controlled experiment where we pre-train GPT2-like models, varying only the MLP dimension while keeping all other components fixed, including the number of layers, embedding dimension, dataset, and training settings. The same phenomenon is observed.
 
