@@ -74,17 +74,6 @@ Dispersion loss counteracts the embedding condensation effect during mid-trainin
 <img src="assets/results_condensation_counteract.png" width="800">
 
 
-## Citation
-```bibtex
-@inproceedings{liu2026dispersion,
-  title={Dispersion loss counteracts embedding condensation and improves generalization in small language models},
-  author={Liu, Chen and Sun, Xingzhi and Xiao, Xi and Van Tassel, Alexandre and Xu, Ke and Reimann, Kristof and Liao, Danqi and Gerstein, Mark and Wang, Tianyang and Wang, Xiao and Krishnaswamy, Smita},
-  booktitle={International conference on machine learning},
-  year={2026},
-  organization={PMLR}
-}
-```
-
 ## Reproduce our main observations on embedding condensation
 
 Under `key_observations`.
@@ -227,3 +216,15 @@ You can run:
 ```bash
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 ```
+
+## Citation
+```bibtex
+@inproceedings{liu2026dispersion,
+  title={Dispersion loss counteracts embedding condensation and improves generalization in small language models},
+  author={Liu, Chen and Sun, Xingzhi and Xiao, Xi and Van Tassel, Alexandre and Xu, Ke and Reimann, Kristof and Liao, Danqi and Gerstein, Mark and Wang, Tianyang and Wang, Xiao and Krishnaswamy, Smita},
+  booktitle={International conference on machine learning},
+  year={2026},
+  organization={PMLR}
+}
+```
+
