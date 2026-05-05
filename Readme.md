@@ -28,7 +28,7 @@ This is the official repository for the ICML 2026 paper
 
 Please raise issues [here](https://github.com/ChenLiu-1996/LM-Dispersion).
 
-You are encouraged to read the illustrated walkthrough of the paper on the [project website](https://chenliu-1996.github.io/projects/LM-Dispersion/).
+**You are encouraged to read the illustrated walkthrough of the paper on the [project website](https://chenliu-1996.github.io/projects/LM-Dispersion/).**
 
 <br>
 
