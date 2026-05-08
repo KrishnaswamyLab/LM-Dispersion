@@ -78,7 +78,7 @@ Dispersion loss counteracts the embedding condensation effect during mid-trainin
 
 
 ## Disclaimers and future directions
-Please see our [project website](https://chenliu-1996.github.io/projects/LM-Dispersion/) for disclaimers and future directions.
+Please see our [project website](https://chenliu-1996.github.io/projects/LM-Dispersion/) for disclaimers and some future directions we suggest.
 
 
 ## Reproduce our main observations on embedding condensation
