@@ -8,6 +8,9 @@
   [![ICML 2026](https://img.shields.io/badge/ICML_2026-purple)](https://openreview.net/pdf?id=pd6A7jB5D6)
   [![OpenReview](https://img.shields.io/badge/OpenReview-eeeeee)](https://openreview.net/forum?id=pd6A7jB5D6)
   [![GitHub Stars](https://img.shields.io/github/stars/KrishnaswamyLab/LM-Dispersion.svg?style=social\&label=Stars)](https://github.com/KrishnaswamyLab/LM-Dispersion)
+  <br>[![Latest PyPI version](https://img.shields.io/pypi/v/embedding-condensation.svg)](https://pypi.org/project/embedding-condensation/)
+  [![PyPI download 3 month](https://static.pepy.tech/badge/embedding-condensation)](https://pepy.tech/projects/embedding-condensation)
+  [![PyPI download month](https://img.shields.io/pypi/dm/embedding-condensation.svg)](https://pypistats.org/packages/embedding-condensation)
   <br>[![LinkedIn](https://img.shields.io/badge/LinkedIn-Chen-blue)](https://www.linkedin.com/in/chenliu1996/)
   [![LinkedIn](https://img.shields.io/badge/LinkedIn-Xingzhi-blue)](https://www.linkedin.com/in/xingzhi-sun)
   [![LinkedIn](https://img.shields.io/badge/LinkedIn-Xiao-blue)](https://www.linkedin.com/in/xi-xiao-4800272a5)
@@ -76,10 +79,53 @@ Dispersion loss counteracts the embedding condensation effect during mid-trainin
 
 <img src="assets/results_condensation_counteract.png" width="800">
 
+<br>
 
 ## Disclaimers and future directions
 Please see our [project website](https://chenliu-1996.github.io/projects/LM-Dispersion/) for disclaimers and some future directions we suggest.
 
+
+## [New] PyPI support: embedding condensation
+
+We have provided the computation and visualzation of embedding condensation into a PyPI package!
+
+1. Install or upgrade the package.
+
+```sh
+pip install embedding-condensation --upgrade
+```
+
+2. Use it by simply passing in a `transformers` model and tokenizer, as shown in the example below.
+
+- `max_length` determines the number of tokens in the context.
+- `dataset` currently supports [`wikipedia`, `pubmed`, `imdb`, `squad`].
+- `min_word_count` and `max_word_count` faciliates the text parser when grabbing a random part from the `dataset` corpse.
+- If you have a specific text corpse, you can pass it in using the `texts` argument (expected format is `Sequence[str]`). This would bypass `dataset`, `min_word_count` and `max_word_count`.
+
+
+```python3
+import numpy as np
+from transformers import AutoModel, AutoTokenizer
+from embedding_condensation import measure_embedding_condensation
+
+model = AutoModel.from_pretrained("gpt2")
+model.eval()
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
+
+result = measure_embedding_condensation(
+    model,
+    tokenizer,
+    repetitions=10,
+    max_length=512,
+    dataset="wikipedia",
+    min_word_count=1024,
+    max_word_count=1280,
+    plot=True,
+    show_progress=True,
+    save_path="./test_embedding_condensation.png",
+)
+print(result.cossim_by_layer.shape)
+```
 
 ## Reproduce our main observations on embedding condensation
 
